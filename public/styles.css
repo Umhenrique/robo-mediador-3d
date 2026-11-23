@@ -688,12 +688,124 @@ body {
 }
 
 @media (max-width: 980px) {
+  body {
+    align-items: flex-start;
+    overflow-x: hidden;
+  }
+
   .app-shell {
     grid-template-columns: 1fr;
-    padding: 24px;
-    gap: 28px;
+    padding: 16px 14px 32px;
+    gap: 18px;
+    min-height: auto;
   }
+
+  .robot-studio-card {
+    max-width: 100%;
+    padding: 14px 14px 14px;
+    border-radius: 22px;
+    gap: 12px;
+  }
+
   .studio-viewport {
-    height: 360px;
+    height: 250px;
+    border-radius: 14px;
+  }
+
+  .robot-status-line {
+    font-size: 16px;
+  }
+
+  .robot-model-tag {
+    font-size: 15px;
+  }
+
+  .interaction-column {
+    max-width: 100%;
+    gap: 18px;
+  }
+
+  .voice-hero {
+    gap: 12px;
+  }
+
+  .waveform {
+    height: 32px;
+  }
+
+  .btn-amber-voice {
+    width: 100%;
+    justify-content: center;
+    padding: 15px 22px;
+    font-size: 17px;
+  }
+
+  .quiet-text-row {
+    max-width: 100%;
+  }
+
+  .quiet-text-row input {
+    font-size: 16px; /* Evita zoom forçado do Safari iOS ao focar input */
+  }
+
+  .sheet-card {
+    padding: 22px 18px;
+    border-radius: 20px;
+  }
+
+  .sheet-eyebrow {
+    font-size: 14.5px;
+  }
+
+  .sheet-headline {
+    font-size: 22px;
+    line-height: 1.3;
+  }
+
+  .sheet-headline-input {
+    font-size: 20px;
+    line-height: 1.34;
+  }
+
+  .sheet-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .btn-outline,
+  .btn-forest {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+    padding: 15px 20px;
+    font-size: 16px;
+  }
+
+  .tone-custom-input {
+    flex-wrap: wrap;
+  }
+
+  .tone-custom-input input {
+    width: 100%;
+    flex: 1 1 100%;
+    font-size: 16px;
+  }
+
+  .btn-tone-mic,
+  .btn-tone-apply {
+    flex: 1;
+    text-align: center;
+    padding: 10px 14px;
+  }
+
+  .modal-sheet {
+    padding: 20px 16px;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
   }
 }

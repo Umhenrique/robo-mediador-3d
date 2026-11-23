@@ -121,10 +121,35 @@ async function checkLLMHealth() {
   }
 }
 
+// Audio element persistente para evitar bloqueio de autoplay no iOS Safari e Chrome Android
+let sharedAudioPlayer = null;
+function unlockMobileAudio() {
+  if (!sharedAudioPlayer) {
+    sharedAudioPlayer = new Audio();
+    sharedAudioPlayer.playsInline = true;
+  }
+  // Toca um silêncio curto no gesto do usuário para destravar a saída de áudio no celular
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') ctx.resume();
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+      setTimeout(() => ctx.close().catch(() => {}), 100);
+    }
+  } catch {}
+}
+
 async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', statusLabel = 'Falando com você' } = {}) {
   if (!text) return;
   if (state.currentAudio) {
-    state.currentAudio.pause();
+    try {
+      state.currentAudio.pause();
+    } catch {}
     state.currentAudio = null;
   }
 
@@ -141,7 +166,9 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    const audio = sharedAudioPlayer || new Audio();
+    audio.src = url;
+    audio.playsInline = true;
     state.currentAudio = audio;
 
     await new Promise((resolve) => {
@@ -149,8 +176,14 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
         URL.revokeObjectURL(url);
         resolve();
       };
-      audio.onerror = () => resolve();
-      audio.play().catch(() => resolve());
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve();
+      };
+      audio.play().catch(() => {
+        URL.revokeObjectURL(url);
+        resolve();
+      });
     });
   } catch {
     if ('speechSynthesis' in window) {
@@ -384,16 +417,38 @@ async function approveAndSend() {
 }
 
 // ============================================================================
-// CAPTURA DE VOZ -> WAV 16kHz -> KOBOLDCPP WHISPER LOCAL
+// CAPTURA DE VOZ (COMPATÍVEL COM CELULAR ANDROID/iOS E DESKTOP) -> WAV 16kHz -> WHISPER
 // ============================================================================
+function resampleFloat32To16k(inputSamples, inputSampleRate) {
+  if (inputSampleRate === 16000) return inputSamples;
+  const ratio = inputSampleRate / 16000;
+  const newLength = Math.round(inputSamples.length / ratio);
+  const result = new Float32Array(newLength);
+  for (let i = 0; i < newLength; i++) {
+    const pos = i * ratio;
+    const idx = Math.floor(pos);
+    const frac = pos - idx;
+    const s0 = inputSamples[idx] || 0;
+    const s1 = inputSamples[Math.min(idx + 1, inputSamples.length - 1)] || 0;
+    result[i] = s0 + frac * (s1 - s0);
+  }
+  return result;
+}
+
 async function encodeAudioBlobToWav16kBase64(blob) {
   const arrayBuffer = await blob.arrayBuffer();
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  // No celular (iOS/Android), criar AudioContext sem forçar sampleRate evita DOMException
+  const audioCtx = new AudioCtx();
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume().catch(() => {});
+  }
   const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-  const channelData = audioBuffer.getChannelData(0);
+  const rawChannelData = audioBuffer.getChannelData(0);
+  const resampled16k = resampleFloat32To16k(rawChannelData, audioBuffer.sampleRate);
 
-  const wavBuffer = encodeWAV(channelData, audioBuffer.sampleRate);
-  await audioCtx.close();
+  const wavBuffer = encodeWAV(resampled16k, 16000);
+  await audioCtx.close().catch(() => {});
 
   let binary = '';
   const bytes = new Uint8Array(wavBuffer);
@@ -402,6 +457,21 @@ async function encodeAudioBlobToWav16kBase64(blob) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+function getSupportedRecorderMimeType() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+    'audio/aac',
+  ];
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime;
+  }
+  return '';
 }
 
 function encodeWAV(samples, sampleRate) {
@@ -434,15 +504,26 @@ function encodeWAV(samples, sampleRate) {
 }
 
 async function toggleVoiceRecording(onTranscribedCallback) {
+  unlockMobileAudio();
+
   if (state.isRecording && state.mediaRecorder) {
-    state.mediaRecorder.stop();
+    try {
+      state.mediaRecorder.stop();
+    } catch {}
     return;
   }
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
     state.audioChunks = [];
-    const recorder = new MediaRecorder(stream);
+    const chosenMime = getSupportedRecorderMimeType();
+    const recorder = chosenMime ? new MediaRecorder(stream, { mimeType: chosenMime }) : new MediaRecorder(stream);
     state.mediaRecorder = recorder;
     state.isRecording = true;
 
@@ -451,35 +532,40 @@ async function toggleVoiceRecording(onTranscribedCallback) {
     setRobotStatus('Ouvindo você...', 'listening', 'nod_gentle', true);
     robot3D.setUserListeningState(true);
 
-    // Detecção Automática de Silêncio (VAD) para parar naturalmente quando o usuário terminar de falar
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Detecção Automática de Silêncio (VAD) usando TimeDomain RMS (funciona em Android, iOS e Desktop)
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioCtx();
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume().catch(() => {});
+    }
     const source = audioCtx.createMediaStreamSource(stream);
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 512;
     source.connect(analyser);
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    const timeData = new Uint8Array(analyser.fftSize);
 
     let hasSpoken = false;
     let lastSpeechTime = performance.now();
     const recordStartTime = performance.now();
-    const SILENCE_THRESHOLD = 14; // Nível RMS mínimo para considerar fala ativa
-    const SILENCE_DURATION_MS = 1350; // Para naturalmente após ~1.35s de silêncio depois de falar
-    const MAX_INITIAL_WAIT_MS = 7000; // Cancela se ninguém falar nada por 7s
+    const RMS_SPEECH_THRESHOLD = 0.022; // Sensibilidade calibrada para microfone de celular e PC
+    const SILENCE_DURATION_MS = 1450; // Para naturalmente após ~1.45s de silêncio depois de falar
+    const MAX_INITIAL_WAIT_MS = 8000; // Cancela se ninguém falar nada por 8s
 
     const vadInterval = setInterval(() => {
       if (!state.isRecording) {
         clearInterval(vadInterval);
         return;
       }
-      analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i++) {
-        sum += dataArray[i];
+      analyser.getByteTimeDomainData(timeData);
+      let sumSquares = 0;
+      for (let i = 0; i < timeData.length; i++) {
+        const normalized = (timeData[i] - 128) / 128.0;
+        sumSquares += normalized * normalized;
       }
-      const avgVolume = sum / dataArray.length;
+      const rms = Math.sqrt(sumSquares / timeData.length);
       const now = performance.now();
 
-      if (avgVolume > SILENCE_THRESHOLD) {
+      if (rms > RMS_SPEECH_THRESHOLD) {
         hasSpoken = true;
         lastSpeechTime = now;
       } else if (hasSpoken && now - lastSpeechTime > SILENCE_DURATION_MS) {
@@ -492,7 +578,7 @@ async function toggleVoiceRecording(onTranscribedCallback) {
     }, 90);
 
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) state.audioChunks.push(e.data);
+      if (e.data && e.data.size > 0) state.audioChunks.push(e.data);
     };
 
     recorder.onstop = async () => {
@@ -505,7 +591,11 @@ async function toggleVoiceRecording(onTranscribedCallback) {
       robot3D.setUserListeningState(false);
 
       try {
-        const blob = new Blob(state.audioChunks, { type: recorder.mimeType || 'audio/webm' });
+        const actualMime = recorder.mimeType || chosenMime || 'audio/webm';
+        const blob = new Blob(state.audioChunks, { type: actualMime });
+        if (blob.size < 400) {
+          return;
+        }
         const wavBase64 = await encodeAudioBlobToWav16kBase64(blob);
 
         const res = await fetch('/api/stt', {
@@ -527,9 +617,10 @@ async function toggleVoiceRecording(onTranscribedCallback) {
       }
     };
 
-    recorder.start();
+    // Passar timeslice (250ms) garante que chunks sejam coletados continuamente no iOS e Android
+    recorder.start(250);
   } catch (err) {
-    alert(`Microfone não disponível: ${err.message}`);
+    alert(`Microfone não disponível (use o link HTTPS no celular): ${err.message}`);
   }
 }
 
@@ -542,9 +633,15 @@ el.btnHoldToTalk.addEventListener('click', () => {
   });
 });
 
-el.btnSendText.addEventListener('click', () => sendElderMessage(el.inputChatText.value));
+el.btnSendText.addEventListener('click', () => {
+  unlockMobileAudio();
+  sendElderMessage(el.inputChatText.value);
+});
 el.inputChatText.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') sendElderMessage(el.inputChatText.value);
+  if (e.key === 'Enter') {
+    unlockMobileAudio();
+    sendElderMessage(el.inputChatText.value);
+  }
 });
 
 el.btnFinishTalk.addEventListener('click', runFullConversationAnalysis);
