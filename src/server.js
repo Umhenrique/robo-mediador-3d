@@ -545,8 +545,8 @@ function buildFallbackAnalysis(history, { elderName, elderGender, neuroticismLev
 
 app.listen(PORT, () => {
   console.log(`\n=============================================================`);
-  console.log(`🤖 ROBÔ MEDIADOR SOCIAL 3D (BENTO) - SERVIDOR INICIADO`);
-  console.log(`🌐 Interface 3D & Mediação: http://localhost:${PORT}`);
-  console.log(`🧠 Backend LLM Local (<= 6GB VRAM): ${KOBOLD_URL}`);
+  console.log(`ROBO MEDIADOR SOCIAL 3D (BENTO) - SERVIDOR INICIADO`);
+  console.log(`Interface 3D e Mediacao: http://localhost:${PORT}`);
+  console.log(`Backend LLM Local (<= 6GB VRAM): ${KOBOLD_URL}`);
   console.log(`=============================================================\n`);
 });
