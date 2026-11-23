@@ -28,6 +28,7 @@ const el = {
   viewDelivered: document.getElementById('viewDelivered'),
 
   convEyebrow: document.getElementById('convEyebrow'),
+  btnReplaySpeech: document.getElementById('btnReplaySpeech'),
   btnFinishTalk: document.getElementById('btnFinishTalk'),
   liveTranscriptText: document.getElementById('liveTranscriptText'),
   elderLastSpoken: document.getElementById('elderLastSpoken'),
@@ -121,37 +122,99 @@ async function checkLLMHealth() {
   }
 }
 
-// Audio element persistente para evitar bloqueio de autoplay no iOS Safari e Chrome Android
+// ============================================================================
+// MOTOR DE ÁUDIO MOBILE-SAFE (Web Audio API Persistente + HTML5 Audio Unlocked)
+// ============================================================================
+// No Android e iOS, quando o VAD termina por silêncio (setInterval) + fetch(/api/stt) + fetch(/api/chat),
+// a chamada final de TTS ocorre fora de um evento de toque ("user gesture").
+// Um <audio> HTML5 que nunca deu .play() durante o toque é bloqueado com NotAllowedError.
+// Já um AudioContext único que deu .resume() no toque do botão permanece "running" para sempre
+// e toca qualquer Buffer MP3 assíncrono via decodeAudioData() com 100% de garantia no celular!
+let ttsAudioCtx = null;
+let currentBufferSource = null;
 let sharedAudioPlayer = null;
-function unlockMobileAudio() {
-  if (!sharedAudioPlayer) {
-    sharedAudioPlayer = new Audio();
-    sharedAudioPlayer.playsInline = true;
+let isHtmlAudioUnlocked = false;
+
+const SILENT_WAV_DATA_URI =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
+function getOrCreateTtsAudioContext() {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return null;
+  if (!ttsAudioCtx || ttsAudioCtx.state === 'closed') {
+    ttsAudioCtx = new AudioCtx();
   }
-  // Toca um silêncio curto no gesto do usuário para destravar a saída de áudio no celular
+  return ttsAudioCtx;
+}
+
+function unlockMobileAudio() {
+  // 1. Destrava e mantém vivo o Web Audio Context principal
   try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (AudioCtx) {
-      const ctx = new AudioCtx();
-      if (ctx.state === 'suspended') ctx.resume();
+    const ctx = getOrCreateTtsAudioContext();
+    if (ctx) {
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
       const buf = ctx.createBuffer(1, 1, 22050);
       const src = ctx.createBufferSource();
       src.buffer = buf;
       src.connect(ctx.destination);
       src.start(0);
-      setTimeout(() => ctx.close().catch(() => {}), 100);
+    }
+  } catch {}
+
+  // 2. Destrava também o elemento <audio> HTML5 dando .play() num WAV silencioso dentro do toque
+  try {
+    if (!sharedAudioPlayer) {
+      sharedAudioPlayer = new Audio();
+      sharedAudioPlayer.playsInline = true;
+      sharedAudioPlayer.setAttribute('playsinline', '');
+      sharedAudioPlayer.setAttribute('webkit-playsinline', '');
+    }
+    if (!isHtmlAudioUnlocked) {
+      sharedAudioPlayer.src = SILENT_WAV_DATA_URI;
+      sharedAudioPlayer.volume = 0.01;
+      const p = sharedAudioPlayer.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          sharedAudioPlayer.pause();
+          sharedAudioPlayer.volume = 1.0;
+          isHtmlAudioUnlocked = true;
+        }).catch(() => {});
+      }
     }
   } catch {}
 }
 
-async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', statusLabel = 'Falando com você' } = {}) {
-  if (!text) return;
+// Destrava automaticamente no primeiro toque ou clique em qualquer lugar da tela do celular
+['touchstart', 'touchend', 'click', 'keydown'].forEach((evtName) => {
+  window.addEventListener(evtName, unlockMobileAudio, { once: true, passive: true });
+});
+
+function stopCurrentRobotAudio() {
+  if (currentBufferSource) {
+    try {
+      currentBufferSource.stop(0);
+      currentBufferSource.disconnect();
+    } catch {}
+    currentBufferSource = null;
+  }
   if (state.currentAudio) {
     try {
       state.currentAudio.pause();
     } catch {}
     state.currentAudio = null;
   }
+  if ('speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+  }
+}
+
+async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', statusLabel = 'Falando com você' } = {}) {
+  if (!text) return;
+  stopCurrentRobotAudio();
 
   setRobotStatus(statusLabel, emotion, gesture, true);
   robot3D.setSpeakingState(true);
@@ -162,30 +225,63 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
-    if (!res.ok) throw new Error('TTS erro');
+    if (!res.ok) throw new Error('TTS backend indisponivel');
 
-    const blob = await res.blob();
+    const arrayBuffer = await res.arrayBuffer();
+    if (!arrayBuffer || arrayBuffer.byteLength < 100) {
+      throw new Error('Audio TTS vazio');
+    }
+
+    // CAMINHO 1 (PRIORITÁRIO PARA CELULAR E PC): Reproduz via Web Audio API (ttsAudioCtx)
+    // Como ttsAudioCtx foi resumido no toque do usuário, ele NUNCA sofre bloqueio de autoplay após o VAD/fetch!
+    const ctx = getOrCreateTtsAudioContext();
+    if (ctx) {
+      if (ctx.state === 'suspended') {
+        await ctx.resume().catch(() => {});
+      }
+      // Faz uma cópia do buffer caso precise de fallback para HTML5 Audio
+      const bufferCopy = arrayBuffer.slice(0);
+      const decodedBuffer = await ctx.decodeAudioData(bufferCopy);
+
+      await new Promise((resolve) => {
+        const source = ctx.createBufferSource();
+        source.buffer = decodedBuffer;
+        source.connect(ctx.destination);
+        currentBufferSource = source;
+        source.onended = () => {
+          if (currentBufferSource === source) currentBufferSource = null;
+          resolve();
+        };
+        source.start(0);
+      });
+      return;
+    }
+
+    // CAMINHO 2 (FALLBACK HTML5 AUDIO): Caso o navegador não suporte decodeAudioData
+    const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
     const url = URL.createObjectURL(blob);
     const audio = sharedAudioPlayer || new Audio();
+    audio.volume = 1.0;
     audio.src = url;
     audio.playsInline = true;
     state.currentAudio = audio;
 
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       audio.onended = () => {
         URL.revokeObjectURL(url);
         resolve();
       };
-      audio.onerror = () => {
+      audio.onerror = (e) => {
         URL.revokeObjectURL(url);
-        resolve();
+        reject(e);
       };
-      audio.play().catch(() => {
+      audio.play().catch((err) => {
         URL.revokeObjectURL(url);
-        resolve();
+        reject(err);
       });
     });
   } catch {
+    // CAMINHO 3 (FALLBACK NATIVO DO CELULAR/WINDOWS): Voz sintetizada local pt-BR
     if ('speechSynthesis' in window) {
       await new Promise((resolve) => {
         const u = new SpeechSynthesisUtterance(text);
@@ -645,6 +741,16 @@ el.inputChatText.addEventListener('keydown', (e) => {
 });
 
 el.btnFinishTalk.addEventListener('click', runFullConversationAnalysis);
+
+if (el.btnReplaySpeech) {
+  el.btnReplaySpeech.addEventListener('click', () => {
+    unlockMobileAudio();
+    const txt = el.liveTranscriptText.textContent.trim();
+    if (txt) {
+      speakWithRobot(txt, { emotion: 'warm', gesture: 'nod_gentle' });
+    }
+  });
+}
 
 const TONE_KEYS_ORDER = [
   'concealing_speculation',

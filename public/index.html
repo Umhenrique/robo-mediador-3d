@@ -84,7 +84,10 @@
           <div id="viewConversation" class="sheet-view active">
             <div class="sheet-header">
               <span class="sheet-eyebrow" id="convEyebrow">Conversa com o Bento</span>
-              <button id="btnFinishTalk" class="link-action" style="display:none">Preparar recado →</button>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <button type="button" id="btnReplaySpeech" class="link-action" title="Ouvir novamente a fala do Bento">Ouvir voz</button>
+                <button type="button" id="btnFinishTalk" class="link-action" style="display:none">Preparar recado →</button>
+              </div>
             </div>
 
             <p id="liveTranscriptText" class="sheet-headline">
