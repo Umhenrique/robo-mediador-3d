@@ -31,6 +31,7 @@ BASE_DIR = os.path.dirname(__file__)
 STL_DIR = os.path.join(BASE_DIR, "stl")
 IMG_ASSEMBLED = os.path.join(BASE_DIR, "preview_3d_bento_montado.png")
 IMG_PARTS = os.path.join(BASE_DIR, "preview_3d_pecas_separadas.png")
+IMG_XRAY = os.path.join(BASE_DIR, "diagrama_onde_encaixa_arduino_e_servo.png")
 PDF_OUT = os.path.join(BASE_DIR, "GUIA_IMPRESSAO_3D_E_ARDUINO_BENTO.pdf")
 
 
@@ -357,12 +358,18 @@ def build_pdf_guide():
     story.append(Spacer(1, 8))
 
     # SEÇÃO 5: ENCAIXE MECÂNICO DAS PEÇAS IMPRESSAS
-    story.append(Paragraph("5. Montagem Física das Peças Impressas em 3D", h2_style))
+    story.append(Paragraph("5. Raio-X: Onde Cada Peça e o Arduino UNO R3 se Encaixam", h2_style))
+    if os.path.exists(IMG_XRAY):
+        story.append(Spacer(1, 2))
+        story.append(RLImage(IMG_XRAY, width=174 * mm, height=78 * mm))
+        story.append(Spacer(1, 6))
+
     mech_steps = [
-        "1. Passe o cabo do Servo SG90 por cima do buraco do pescoço da peça <b>01_Corpo_Base_SG90</b> e puxe o fio para fora pelo túnel traseiro na base.",
-        "2. Encaixe o corpo azul do Servo SG90 dentro do pescoço até as abas laterais dele apoiarem no topo.",
-        "3. Encaixe a hélice plástica branca (<i>horn</i>) na cavidade embaixo da peça <b>02_Cabeca_Bento_SG90</b> (se quiser deixar bem firme, pingue uma gota de cola quente na hélice branca).",
-        "4. Encaixe a cabeça sobre a engrenagem dentada do Servo SG90 e espete os 2 bracinhos (<b>03_Par_Bracos_Encaixe</b>) nos furos laterais do corpo.",
+        "• <b>Dentro do Pescoço (Azul Royal no diagrama):</b> O <b>Micro Servo 9g (SG90)</b> entra por cima no buraco do pescoço da peça <b>01_Corpo_Base_SG90.stl</b>. O eixo dele aponta para cima para encaixar embaixo da cabeça.",
+        "• <b>Dentro do Peito (Vermelho no diagrama):</b> O <b>LED de 5mm</b> encaixa por dentro do corpo oco no furo frontal do peito.",
+        "• <b>Onde fica a placa Arduino UNO R3 (Azul Turquesa no diagrama) — Você tem 2 opções:</b>",
+        "&nbsp;&nbsp;&nbsp;&nbsp;– <b>Opção A (Na mesa atrás do robô):</b> Os 3 fios do servo saem pelo túnel traseiro da base e vão até a placa Arduino UNO R3 apoiada na mesa atrás dele (igual à Figura 7 do artigo de Tanaka et al.).",
+        "&nbsp;&nbsp;&nbsp;&nbsp;– <b>Opção B (100% Embutida embaixo do robô):</b> Imprima também a peça <b>05_Base_Gaveta_Arduino_UNO.stl</b> (102 x 102 x 30 mm). A placa Arduino UNO R3 desliza como uma gaveta para dentro desse pedestal e o Bento fica sentado em cima dela, escondendo toda a eletrônica!",
     ]
     for step in mech_steps:
         story.append(Paragraph(step, bullet_style))
