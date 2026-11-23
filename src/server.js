@@ -238,7 +238,7 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
 
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...history.slice(-10).map((m) => ({
+      ...history.slice(-30).map((m) => ({
         role: m.role,
         content: m.content,
       })),
