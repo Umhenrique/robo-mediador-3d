@@ -1,0 +1,15 @@
+{
+  "name": "robo-mediador-3d",
+  "version": "1.0.0",
+  "description": "Protótipo de Robô Social Mediador 3D entre Idoso e Família (Noguchi, Kamide & Tanaka, 2023) com LLM Local <= 6GB VRAM",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "msedge-tts": "^2.0.4"
+  }
+}

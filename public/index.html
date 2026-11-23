@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bento — Mediador Familiar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- COLUNA ESQUERDA: CARD DE ESTÚDIO 3D (CONCEITO 2) -->
+    <section class="left-stage">
+      <div class="robot-studio-card">
+        <div id="canvas3dContainer" class="studio-viewport">
+          <!-- Botão discreto para testar gestos ou configurações -->
+          <div class="studio-floating-tools">
+            <button id="btnOpenSettings" class="icon-pill" title="Configurações e Cenários de Teste">
+              Ajustes &amp; Cenários
+            </button>
+          </div>
+        </div>
+
+        <footer class="robot-studio-footer">
+          <div class="robot-status-line">
+            <span id="statusDot" class="status-dot"></span>
+            <span class="robot-name">Bento</span>
+            <span class="sep">•</span>
+            <span id="robotStateText" class="robot-status-label">Pronto para ouvir</span>
+          </div>
+          <span class="robot-model-tag">Type-B</span>
+        </footer>
+      </div>
+    </section>
+
+    <!-- COLUNA DIREITA: INTERAÇÃO DE VOZ & FOLHA DE MENSAGEM -->
+    <section class="right-stage">
+      <div class="interaction-column">
+        <!-- 1. ONDA SONORA & BOTÃO DE VOZ ÂMBAR -->
+        <div class="voice-hero">
+          <div id="waveformBars" class="waveform" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+          </div>
+
+          <button id="btnHoldToTalk" class="btn-amber-voice">
+            <svg class="mic-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" x2="12" y1="19" y2="22"></line>
+              <line x1="8" x2="16" y1="22" y2="22"></line>
+            </svg>
+            <span id="micBtnText">Falar com o Bento</span>
+          </button>
+
+          <!-- Entrada de texto sutil para quem preferir digitar -->
+          <div class="quiet-text-row">
+            <input
+              type="text"
+              id="inputChatText"
+              placeholder="Ou escreva aqui para conversar com o Bento..."
+              autocomplete="off"
+            />
+            <button id="btnSendText" class="btn-quiet-send" title="Enviar">↵</button>
+          </div>
+        </div>
+
+        <!-- 2. CARTÃO PRINCIPAL (ALTERNA ENTRE DIÁLOGO, RESUMO/RECADO E CONFIRMAÇÃO DE ENVIO) -->
+        <div class="sheet-card">
+          <!-- MODO A: CONVERSA ATIVA -->
+          <div id="viewConversation" class="sheet-view active">
+            <div class="sheet-header">
+              <span class="sheet-eyebrow" id="convEyebrow">Conversa com o Bento</span>
+              <button id="btnFinishTalk" class="link-action" style="display:none">Preparar recado →</button>
+            </div>
+
+            <p id="liveTranscriptText" class="sheet-headline">
+              Olá! Eu sou o Bento. Como você está se sentindo hoje?
+            </p>
+
+            <p id="elderLastSpoken" class="elder-quote" style="display:none"></p>
+          </div>
+
+          <!-- MODO B: RESUMO & MENSAGEM PARA A FAMÍLIA (EXATAMENTE COMO NO CONCEITO 2) -->
+          <div id="viewSummary" class="sheet-view">
+            <div class="sheet-header">
+              <span class="sheet-eyebrow">Resumo &amp; Mensagem para a Família</span>
+              <button id="btnListenDraft" class="link-action" title="Ouvir recado em voz alta">🔊 Ouvir</button>
+            </div>
+
+            <!-- Relatório Estruturado Limpo do Log da Conversa -->
+            <div id="structuredSummaryBox" class="structured-report-box">
+              <div class="report-top-row">
+                <span id="reportTopicBadge" class="report-badge">Saúde &amp; Rotina</span>
+                <span id="reportSupportBadge" class="report-support-tag">Apoio Familiar</span>
+              </div>
+              <p id="reportExecutiveText" class="report-exec-text"></p>
+              <ul id="reportPainPointsList" class="report-pain-list"></ul>
+            </div>
+
+            <div class="message-draft-label">Mensagem que será enviada para a família:</div>
+
+            <textarea
+              id="textareaFinalMessage"
+              class="sheet-headline-input"
+              rows="3"
+              aria-label="Mensagem para a família"
+            ></textarea>
+
+            <!-- Seletor de Tom Sempre Visível e Funcional + Ajuste Livre -->
+            <div id="toneDrawer" class="tone-drawer">
+              <div class="tone-drawer-title">Escolha ou mude o tom da mensagem:</div>
+              <div class="tone-options-pills">
+                <button type="button" class="tone-pill" data-option-key="concealing_speculation">1. Sutil (Observação do Bento)</button>
+                <button type="button" class="tone-pill" data-option-key="requesting_support_direct">2. Pedir Apoio com Cuidado</button>
+                <button type="button" class="tone-pill" data-option-key="concealing_common">3. Indireto e Leve</button>
+                <button type="button" class="tone-pill" data-option-key="recording_faithful">4. Direto e Sincero</button>
+              </div>
+              <div class="tone-custom-input">
+                <input
+                  type="text"
+                  id="inputToneFeedback"
+                  placeholder="Ou digite/fale como quer mudar o tom (ex: 'Mais carinhoso', 'Sem alarmar')..."
+                />
+                <button type="button" id="btnVoiceTone" class="btn-tone-mic" title="Falar mudança de tom por voz">🎙️</button>
+                <button type="button" id="btnApplyTone" class="btn-tone-apply">Ajustar Tom</button>
+              </div>
+            </div>
+
+            <div class="sheet-actions">
+              <button type="button" id="btnToggleTone" class="btn-outline">🔄 Outro Tom</button>
+              <button type="button" id="btnApproveAndSend" class="btn-forest">
+                Enviar para <span class="lblRecipientName">a Família</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- MODO C: RECADO ENVIADO / VISÃO DA FAMÍLIA -->
+          <div id="viewDelivered" class="sheet-view">
+            <div class="sheet-header">
+              <span class="sheet-eyebrow">Recado Entregue para <span class="lblRecipientName">a Família</span></span>
+              <button id="btnNewConversation" class="link-action">Nova conversa</button>
+            </div>
+
+            <p id="deliveredMessageText" class="sheet-headline"></p>
+
+            <div class="sheet-actions">
+              <button id="btnBackToEdit" class="btn-outline">Voltar ao Recado</button>
+              <button id="btnSimulateDelivery" class="btn-forest">
+                🔊 Ouvir Entrega do Bento
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- MODAL DISCRETO DE CENÁRIOS DO ARTIGO & PERFIL (NÃO POLUI A TELA PRINCIPAL) -->
+  <div id="settingsModal" class="modal-backdrop" style="display:none">
+    <div class="modal-sheet">
+      <div class="modal-top">
+        <h3>Configurações &amp; Cenários de Demonstração</h3>
+        <button id="btnCloseSettings" class="btn-close">✕</button>
+      </div>
+
+      <div class="modal-section">
+        <label class="modal-label">Cenários Rápidos do Artigo (Noguchi, Kamide &amp; Tanaka, 2023)</label>
+        <div class="modal-chips">
+          <button class="modal-chip" data-scenario="saude">🩺 Saúde (Dor no joelho e remédio)</button>
+          <button class="modal-chip" data-scenario="financas">💰 Finanças (Aposentadoria e contas)</button>
+          <button class="modal-chip" data-scenario="isolamento">🏡 Isolamento (Saudade da família)</button>
+          <button class="modal-chip" data-scenario="sentido_vida">🌅 Propósito (Sentir-se um peso)</button>
+          <button class="modal-chip accent" data-scenario="despedida">👋 Despedida (Concluir e Gerar Resumo)</button>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <label class="modal-label">Testar Posturas Motoras 3D do Robô Type-B</label>
+        <div class="modal-chips">
+          <button class="modal-chip" data-gesture="nod_gentle" data-emotion="listening">Aceno de Escuta (Nod)</button>
+          <button class="modal-chip" data-gesture="tilt_curious" data-emotion="empathetic">Inclinação Empática (Tilt)</button>
+          <button class="modal-chip" data-gesture="lean_serious" data-emotion="serious">Atitude Séria (Weight Shift)</button>
+          <button class="modal-chip" data-gesture="open_arms" data-emotion="anxious_care">Preocupação Solidária</button>
+          <button class="modal-chip" data-gesture="wave_farewell" data-emotion="warm">Aceno de Despedida</button>
+        </div>
+      </div>
+
+      <div class="modal-section form-grid">
+        <div>
+          <label class="modal-label">Nome do Idoso(a) (Opcional - detectado na conversa)</label>
+          <input type="text" id="inputElderName" value="" placeholder="Ex: Dona Lúcia (ou deixe em branco)" />
+        </div>
+        <div>
+          <label class="modal-label">Familiar Destinatário (Opcional)</label>
+          <input type="text" id="inputRecipientName" value="" placeholder="Ex: Mariana (ou deixe em branco)" />
+        </div>
+        <div>
+          <label class="modal-label">Gênero do Idoso</label>
+          <select id="selectElderGender">
+            <option value="masculino">Masculino</option>
+            <option value="feminino">Feminino</option>
+          </select>
+        </div>
+        <div>
+          <label class="modal-label">Perfil Emocional (Big Five)</label>
+          <select id="selectNeuroticism">
+            <option value="alto">Mais Receoso (Alto Neuroticismo)</option>
+            <option value="baixo">Mais Tranquilo (Baixo Neuroticismo)</option>
+          </select>
+        </div>
+        <div>
+          <label class="modal-label">Relação Familiar</label>
+          <select id="selectRecipientRelation">
+            <option value="filha">Filha</option>
+            <option value="filho">Filho</option>
+            <option value="neta">Neta</option>
+            <option value="amigo próximo">Amigo(a)</option>
+          </select>
+        </div>
+        <div>
+          <label class="modal-label">Status do LLM Local (&le; 6GB VRAM)</label>
+          <div id="llmModalStatus" class="modal-status-box">Verificando KoboldCpp...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

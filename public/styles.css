@@ -1,0 +1,699 @@
+:root {
+  --bg-page: #f5f5f7;
+  --bg-card: #ffffff;
+  --bg-studio: #ecebe8;
+  --text-primary: #141413;
+  --text-secondary: #575653;
+  --text-muted: #8e8d8a;
+  --border-subtle: rgba(20, 20, 19, 0.08);
+  --border-strong: rgba(20, 20, 19, 0.16);
+  --amber-primary: #d4942a;
+  --amber-hover: #c0831f;
+  --forest-primary: #2d5a3c;
+  --forest-hover: #23472f;
+  --shadow-card: 0 18px 45px rgba(20, 20, 19, 0.06), 0 2px 10px rgba(20, 20, 19, 0.03);
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* LAYOUT SPLIT-SCREEN (CONCEITO 2) */
+.app-shell {
+  width: 100%;
+  max-width: 1320px;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1fr 1.08fr;
+  align-items: center;
+  gap: 56px;
+  padding: 40px 56px;
+}
+
+/* COLUNA ESQUERDA: CARD DE ESTÚDIO DO ROBÔ 3D */
+.left-stage {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.robot-studio-card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--bg-card);
+  border-radius: 28px;
+  padding: 22px 22px 20px;
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.studio-viewport {
+  position: relative;
+  width: 100%;
+  height: 460px;
+  background: radial-gradient(circle at 50% 40%, #f5f4f0 0%, #e4e2dd 100%);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.studio-floating-tools {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 10;
+}
+
+.icon-pill {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.icon-pill:hover {
+  background: #ffffff;
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.robot-studio-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px;
+}
+
+.robot-status-line {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--forest-primary);
+}
+
+.status-dot.listening {
+  background: var(--amber-primary);
+  box-shadow: 0 0 0 4px rgba(212, 148, 42, 0.2);
+}
+
+.sep {
+  color: var(--text-muted);
+}
+
+.robot-status-label {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.robot-model-tag {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: -0.01em;
+}
+
+/* COLUNA DIREITA: ONDA DE VOZ + BOTÃO ÂMBAR + CARTÃO DE MENSAGEM */
+.right-stage {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.interaction-column {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+/* 1. HERO DE VOZ (ONDA SONORA + PÍLULA ÂMBAR) */
+.voice-hero {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.waveform {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.waveform span {
+  display: block;
+  width: 3.5px;
+  border-radius: 99px;
+  background: var(--amber-primary);
+  opacity: 0.78;
+  transition: height 0.18s ease;
+}
+
+/* Perfil de onda orgânica idêntico ao Conceito 2 */
+.waveform span:nth-child(1), .waveform span:nth-child(23) { height: 5px; opacity: 0.4; }
+.waveform span:nth-child(2), .waveform span:nth-child(22) { height: 8px; opacity: 0.5; }
+.waveform span:nth-child(3), .waveform span:nth-child(21) { height: 14px; }
+.waveform span:nth-child(4), .waveform span:nth-child(20) { height: 24px; }
+.waveform span:nth-child(5), .waveform span:nth-child(19) { height: 36px; }
+.waveform span:nth-child(6), .waveform span:nth-child(18) { height: 22px; }
+.waveform span:nth-child(7), .waveform span:nth-child(17) { height: 12px; }
+.waveform span:nth-child(8), .waveform span:nth-child(16) { height: 18px; }
+.waveform span:nth-child(9), .waveform span:nth-child(15) { height: 32px; }
+.waveform span:nth-child(10), .waveform span:nth-child(14) { height: 42px; }
+.waveform span:nth-child(11), .waveform span:nth-child(13) { height: 28px; }
+.waveform span:nth-child(12) { height: 46px; }
+
+.waveform.active span {
+  animation: waveBounce 0.7s infinite ease-in-out alternate;
+}
+
+.waveform.active span:nth-child(odd) {
+  animation-duration: 0.48s;
+}
+
+.waveform.active span:nth-child(3n) {
+  animation-duration: 0.62s;
+}
+
+@keyframes waveBounce {
+  0% { transform: scaleY(0.45); }
+  100% { transform: scaleY(1.25); }
+}
+
+.btn-amber-voice {
+  background: var(--amber-primary);
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 16px 34px;
+  font-family: var(--font-sans);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(212, 148, 42, 0.25);
+  transition: all 0.2s ease;
+}
+
+.btn-amber-voice:hover {
+  background: var(--amber-hover);
+  transform: translateY(-1px);
+}
+
+.btn-amber-voice.recording {
+  background: #c83e2b;
+  box-shadow: 0 0 0 8px rgba(200, 62, 43, 0.16);
+}
+
+.mic-svg {
+  width: 22px;
+  height: 22px;
+}
+
+.quiet-text-row {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 4px 6px 4px 16px;
+  transition: all 0.2s;
+}
+
+.quiet-text-row:focus-within {
+  background: #ffffff;
+  border-color: var(--border-strong);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04);
+}
+
+.quiet-text-row input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.quiet-text-row input::placeholder {
+  color: var(--text-muted);
+}
+
+.btn-quiet-send {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: var(--bg-page);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn-quiet-send:hover {
+  background: var(--amber-primary);
+  color: #fff;
+}
+
+/* 2. FOLHA BRANCA DE RESUMO & MENSAGEM (CONCEITO 2) */
+.sheet-card {
+  width: 100%;
+  background: var(--bg-card);
+  border-radius: 26px;
+  padding: 36px 38px;
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--border-subtle);
+}
+
+.sheet-view {
+  display: none;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sheet-view.active {
+  display: flex;
+}
+
+.sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sheet-eyebrow {
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: -0.01em;
+}
+
+.link-action {
+  background: none;
+  border: none;
+  color: var(--forest-primary);
+  font-family: var(--font-sans);
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.link-action:hover {
+  background: rgba(45, 90, 60, 0.08);
+}
+
+.sheet-headline {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.26;
+  letter-spacing: -0.025em;
+  color: var(--text-primary);
+}
+
+.sheet-headline-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 1.32;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  resize: none;
+  outline: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.sheet-headline-input:focus {
+  background: #fafaf9;
+  border-radius: 12px;
+}
+
+.elder-quote {
+  font-size: 15.5px;
+  color: var(--text-secondary);
+  border-left: 3px solid var(--amber-primary);
+  padding-left: 12px;
+  line-height: 1.45;
+}
+
+/* RELATÓRIO ESTRUTURADO LIMPO (CONCEITO 2) */
+.structured-report-box {
+  background: #f8f8f6;
+  border: 1px solid var(--border-subtle);
+  border-radius: 18px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.report-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.report-badge {
+  background: rgba(212, 148, 42, 0.16);
+  color: #8c5d11;
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 4px 11px;
+  border-radius: 999px;
+}
+
+.report-support-tag {
+  background: rgba(45, 90, 60, 0.12);
+  color: var(--forest-primary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 999px;
+}
+
+.report-exec-text {
+  font-size: 14.5px;
+  color: var(--text-primary);
+  line-height: 1.45;
+  font-weight: 500;
+}
+
+.report-pain-list {
+  padding-left: 18px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.message-draft-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: -8px;
+}
+
+/* GAVETA LIMPA DE MUDANÇA DE TOM */
+.tone-drawer {
+  background: #f8f8f6;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tone-drawer-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.tone-options-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tone-pill {
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tone-pill:hover,
+.tone-pill.selected {
+  background: var(--text-primary);
+  color: #ffffff;
+  border-color: var(--text-primary);
+}
+
+.tone-custom-input {
+  display: flex;
+  gap: 8px;
+}
+
+.tone-custom-input input {
+  flex: 1;
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 9px 14px;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  outline: none;
+}
+
+.btn-tone-mic,
+.btn-tone-apply {
+  border: 1px solid var(--border-strong);
+  background: #ffffff;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-tone-apply {
+  background: var(--amber-primary);
+  color: #fff;
+  border-color: var(--amber-primary);
+}
+
+/* BOTÕES DE AÇÃO PRINCIPAIS ("Mudar Tom" & "Enviar para Mariana") */
+.sheet-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 6px;
+}
+
+.btn-outline {
+  background: #f4f5f7;
+  color: var(--text-primary);
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 15px 24px;
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.btn-outline:hover {
+  background: #e9eaee;
+}
+
+.btn-forest {
+  flex: 1;
+  background: var(--forest-primary);
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 16px 26px;
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  box-shadow: 0 10px 22px rgba(45, 90, 60, 0.2);
+}
+
+.btn-forest:hover {
+  background: var(--forest-hover);
+  transform: translateY(-1px);
+}
+
+/* MODAL DISCRETO DE CENÁRIOS E AJUSTES */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 20, 19, 0.35);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.modal-sheet {
+  width: 100%;
+  max-width: 580px;
+  background: #ffffff;
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.modal-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-top h3 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.btn-close {
+  background: var(--bg-page);
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.modal-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.modal-chip {
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.modal-chip:hover {
+  background: #e5e5e8;
+}
+
+.modal-chip.accent {
+  background: rgba(212, 148, 42, 0.14);
+  border-color: rgba(212, 148, 42, 0.35);
+  color: #8c5d11;
+  font-weight: 600;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.form-grid input,
+.form-grid select {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+}
+
+.modal-status-box {
+  margin-top: 4px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--bg-page);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--forest-primary);
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    padding: 24px;
+    gap: 28px;
+  }
+  .studio-viewport {
+    height: 360px;
+  }
+}
