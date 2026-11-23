@@ -4,6 +4,7 @@ import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
+import { sendArduinoGesture, detectArduinoPort } from './arduinoBridge.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -282,6 +283,9 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
       parsed.gesture = 'wave_farewell';
     }
 
+    // Dispara o gesto correspondente no Arduino UNO R3 físico (se conectado na USB)
+    sendArduinoGesture(parsed.gesture || 'nod_gentle').catch(() => {});
+
     res.json(parsed);
   } catch (err) {
     console.error('[Chat Error]', err.message);
@@ -493,6 +497,16 @@ app.post('/api/approve-send', async (req, res) => {
 
 app.get('/api/family-inbox', (req, res) => {
   res.json({ messages: familyInbox });
+});
+
+/**
+ * 8. Endpoint para acionar gestos no Arduino UNO R3 físico a partir da interface web
+ */
+app.post('/api/arduino-gesture', async (req, res) => {
+  const { gesture = 'nod_gentle' } = req.body || {};
+  const sent = await sendArduinoGesture(gesture);
+  const port = await detectArduinoPort();
+  res.json({ sent, port: port || 'nenhuma' });
 });
 
 function buildFallbackAnalysis(history, { elderName, elderGender, neuroticismLevel, recipientName, recipientRelation }) {
