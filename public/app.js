@@ -98,6 +98,13 @@ function setRobotStatus(label, emotion = 'warm', gesture = 'nod_gentle', activeW
   el.waveformBars.classList.toggle('active', activeWave);
   el.statusDot.classList.toggle('listening', activeWave);
   robot3D.setEmotionAndGesture(emotion, gesture);
+
+  // Aciona também o Arduino UNO R3 físico na porta USB (se estiver conectado)
+  fetch('/api/arduino-gesture', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gesture }),
+  }).catch(() => {});
 }
 
 async function checkLLMHealth() {
