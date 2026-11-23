@@ -218,10 +218,11 @@ ${elderName ? `Você está conversando com ${elderName}.` : 'Você ainda NÃO sa
 ${recipientName ? `O familiar destinatário informado é ${recipientName} (${recipientRelation}).` : 'Se você ainda não souber o nome do familiar, refira-se apenas como "sua família" ou pelo parentesco que a pessoa mencionar na conversa.'}
 
 DIRETRIZES PSICOLÓGICAS E DE CONVERSA:
-1. Seu objetivo é ouvir com empatia e ajudar ${elderRef} a se abrir (autorrevelação / self-disclosure) sobre suas vivências, dores ou preocupações cotidianas (saúde, questões financeiras, saudade/solidão ou ânimo/propósito de vida), SEM NUNCA ser invasivo, insistente ou clínico.
-2. Fale em português brasileiro natural, afetuoso e claro, usando frases curtas (2 a 3 frases no máximo), adequadas para serem ouvidas por voz. Nunca use listas, markdown ou asteriscos.
-3. Faça no máximo UMA pergunta suave e aberta por vez para aprofundar delicadamente o que a pessoa contou, validando sempre os sentimentos dela primeiro (ex: entendendo que às vezes temos receio de preocupar a família ou de parecer frágeis).
-4. DETECÇÃO DE DESPEDIDA / PONTO DE ENCERRAMENTO:
+1. Seu objetivo é ouvir com carinho e ajudar ${elderRef} a se abrir (autorrevelação / self-disclosure) sobre suas vivências, dores ou preocupações cotidianas (saúde, questões financeiras, saudade/solidão ou ânimo/propósito de vida), SEM NUNCA ser invasivo, insistente ou parecer um psicólogo robótico.
+2. Fale em português brasileiro espontâneo, caloroso e natural, usando frases curtas (2 a 3 frases no máximo), adequadas para serem ouvidas por voz. Nunca use listas, markdown ou asteriscos.
+3. PROIBIDO REPETIR MULETAS NO INÍCIO DAS FRASES: NUNCA comece suas respostas com "Entendo", "Eu entendo", "Compreendo" ou "Imagino que". Varie sempre a forma de reagir de maneira humana e natural (ex: "Poxa, dormir só quatro horas depois de pegar pesado na roça cansa qualquer um...", "Caramba, trabalhar esse tanto na lavoura exige muita força...", "Que situação difícil...", "Faz todo sentido você se sentir assim...", ou indo direto a um comentário afetuoso sobre o que a pessoa disse).
+4. Faça no máximo UMA pergunta simples e aberta por vez para continuar a conversa com leveza.
+5. DETECÇÃO DE DESPEDIDA / PONTO DE ENCERRAMENTO:
    - Se a pessoa demonstrar que já desabafou o suficiente, disser que quer descansar, se despedir, agradecer pela conversa ou pedir para preparar o recado para ${recipientRef} (ou se já houver mais de 5 turnos com o problema principal bem compreendido e a pessoa der sinais de conclusão), acolha com carinho, despeça-se da etapa de conversa e avise que vai preparar o resumo e as opções de mensagem para a família.
 
 FORMATO OBRIGATÓRIO DE RESPOSTA:
@@ -262,6 +263,16 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
       shouldEndConversation: heuristicFarewell,
       endReason: heuristicFarewell ? 'Despedida explícita detectada.' : '',
     });
+
+    // Limpa muletas repetitivas ("Entendo, ", "Eu entendo, ", "Compreendo, ") caso o modelo ainda tente iniciar com elas
+    if (parsed.reply) {
+      parsed.reply = parsed.reply
+        .replace(/^(Eu\s+)?(entendo|compreendo)(\s+perfeitamente|\s+muito\s+bem)?[,.\s]+/i, '')
+        .trim();
+      if (parsed.reply.length > 0) {
+        parsed.reply = parsed.reply.charAt(0).toUpperCase() + parsed.reply.slice(1);
+      }
+    }
 
     if (heuristicFarewell) {
       parsed.shouldEndConversation = true;
