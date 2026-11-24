@@ -77,7 +77,23 @@ body {
   position: absolute;
   top: 14px;
   right: 14px;
+  left: 14px;
   z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.studio-floating-tools .icon-pill {
+  pointer-events: auto;
+}
+
+.icon-pill.connected {
+  background: rgba(45, 90, 60, 0.92);
+  color: #ffffff;
+  border-color: rgba(45, 90, 60, 1);
 }
 
 .icon-pill {

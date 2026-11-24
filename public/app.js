@@ -52,6 +52,7 @@ const el = {
   btnNewConversation: document.getElementById('btnNewConversation'),
 
   // Modal de Configurações & Cenários
+  btnConnectArduinoWeb: document.getElementById('btnConnectArduinoWeb'),
   btnOpenSettings: document.getElementById('btnOpenSettings'),
   btnCloseSettings: document.getElementById('btnCloseSettings'),
   settingsModal: document.getElementById('settingsModal'),
@@ -94,18 +95,104 @@ function showSheetView(viewName) {
   el.viewDelivered.classList.toggle('active', viewName === 'delivered');
 }
 
+// ============================================================================
+// PONTE WEB SERIAL API DIRETA NO NAVEGADOR (PERMITE O GOOGLE COLAB CONTROLAR O ARDUINO LOCAL!)
+// ============================================================================
+// Quando o projeto está rodando na nuvem do Google Colab (link https://xxxx.trycloudflare.com),
+// o servidor lá nos EUA não enxerga a porta USB do seu computador no laboratório.
+// Usando a Web Serial API (navigator.serial) no Chrome/Edge, o próprio navegador conversa
+// diretamente com a porta USB COM local do Arduino UNO R3 em tempo real!
+let webSerialPort = null;
+let webSerialWriter = null;
+
+const GESTURE_TO_ARDUINO_CMD = {
+  nod_gentle: 'G:nod',
+  tilt_curious: 'G:care',
+  lean_serious: 'G:serious',
+  open_arms: 'G:care',
+  wave_farewell: 'G:wave',
+  bow_respect: 'G:serious',
+  talk: 'G:talk',
+  idle: 'G:idle',
+};
+
+async function connectWebSerialArduino() {
+  if (!('serial' in navigator)) {
+    alert('Seu navegador não suporta Web Serial API. Use o Google Chrome ou Microsoft Edge no PC onde o Arduino está plugado.');
+    return;
+  }
+
+  // Se já estiver conectado, envia um aceno de teste
+  if (webSerialWriter) {
+    await sendGestureToArduino('nod_gentle');
+    return;
+  }
+
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+
+    const textEncoder = new TextEncoderStream();
+    textEncoder.readable.pipeTo(port.writable).catch(() => {});
+    webSerialWriter = textEncoder.writable.getWriter();
+    webSerialPort = port;
+
+    if (el.btnConnectArduinoWeb) {
+      el.btnConnectArduinoWeb.classList.add('connected');
+      el.btnConnectArduinoWeb.textContent = 'Arduino USB Conectado';
+    }
+
+    // Aguarda 1.8s caso o Arduino UNO tenha reiniciado ao abrir a porta e manda um aceno de confirmação
+    setTimeout(() => {
+      sendGestureToArduino('nod_gentle');
+    }, 1800);
+
+    port.addEventListener('disconnect', () => {
+      webSerialWriter = null;
+      webSerialPort = null;
+      if (el.btnConnectArduinoWeb) {
+        el.btnConnectArduinoWeb.classList.remove('connected');
+        el.btnConnectArduinoWeb.textContent = 'Conectar Arduino USB';
+      }
+    });
+  } catch (err) {
+    console.warn('[WebSerial] Conexão cancelada ou falhou:', err.message);
+  }
+}
+
+async function sendGestureToArduino(gestureName) {
+  const cmd = GESTURE_TO_ARDUINO_CMD[gestureName] || 'G:nod';
+
+  // 1. Se o usuário conectou o Arduino pelo navegador (Web Serial API — funciona mesmo no Google Colab!)
+  if (webSerialWriter) {
+    try {
+      await webSerialWriter.write(`${cmd}\n`);
+      return;
+    } catch {
+      webSerialWriter = null;
+    }
+  }
+
+  // 2. Fallback: Se estiver rodando o servidor localmente no mesmo PC do Arduino
+  fetch('/api/arduino-gesture', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gesture: gestureName }),
+  }).catch(() => {});
+}
+
+if (el.btnConnectArduinoWeb) {
+  el.btnConnectArduinoWeb.addEventListener('click', connectWebSerialArduino);
+}
+
 function setRobotStatus(label, emotion = 'warm', gesture = 'nod_gentle', activeWave = false) {
   el.robotStateText.textContent = label;
   el.waveformBars.classList.toggle('active', activeWave);
   el.statusDot.classList.toggle('listening', activeWave);
   robot3D.setEmotionAndGesture(emotion, gesture);
 
-  // Aciona também o Arduino UNO R3 físico na porta USB (se estiver conectado)
-  fetch('/api/arduino-gesture', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ gesture }),
-  }).catch(() => {});
+  // Aciona o Arduino UNO R3 físico (via Web Serial no navegador se estiver no Colab, ou via backend local)
+  sendGestureToArduino(gesture);
 }
 
 async function checkLLMHealth() {
