@@ -137,6 +137,9 @@ async function connectWebSerialArduino() {
     webSerialWriter = textEncoder.writable.getWriter();
     webSerialPort = port;
 
+    // Escuta também eventos vindos DO Arduino UNO R3 (Botão físico de falar, botão de tom, sensor de presença)
+    listenToArduinoSerialEvents(port);
+
     if (el.btnConnectArduinoWeb) {
       el.btnConnectArduinoWeb.classList.add('connected');
       el.btnConnectArduinoWeb.textContent = 'Arduino USB Conectado';
@@ -157,6 +160,44 @@ async function connectWebSerialArduino() {
     });
   } catch (err) {
     console.warn('[WebSerial] Conexão cancelada ou falhou:', err.message);
+  }
+}
+
+async function listenToArduinoSerialEvents(port) {
+  try {
+    const textDecoder = new TextDecoderStream();
+    port.readable.pipeTo(textDecoder.writable).catch(() => {});
+    const reader = textDecoder.readable.getReader();
+    let lineBuffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      lineBuffer += value;
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() || '';
+
+      for (const raw of lines) {
+        const evt = raw.trim();
+        if (evt === 'BTN:TALK') {
+          // Botão físico no Pino 2 do Arduino UNO foi pressionado: inicia/para gravação de voz!
+          el.btnHoldToTalk.click();
+        } else if (evt === 'BTN:TONE') {
+          // Botão físico no Pino 3 do Arduino UNO foi pressionado: alterna entre os 4 tons do recado!
+          el.btnToggleTone.click();
+        } else if (evt === 'EVT:PRESENCE') {
+          // Sensor Ultrassônico HC-SR04 detectou o idoso se aproximando (< 50cm)
+          if (state.turnCount === 0 && !state.isRecording) {
+            speakWithRobot(
+              'Olá! Percebi que você chegou perto. Eu sou o Bento! Quando quiser conversar, é só apertar o botão de falar.',
+              { emotion: 'warm', gesture: 'nod_gentle', statusLabel: 'Presença detectada' }
+            );
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[WebSerial Reader] Encerrado:', err.message);
   }
 }
 
