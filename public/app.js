@@ -104,6 +104,8 @@ function showSheetView(viewName) {
 // diretamente com a porta USB COM local do Arduino UNO R3 em tempo real!
 let webSerialPort = null;
 let webSerialWriter = null;
+let webSerialReader = null;
+let userRequestedWebSerial = false;
 
 const GESTURE_TO_ARDUINO_CMD = {
   nod_gentle: 'G:nod',
@@ -148,7 +150,7 @@ async function openGrantedWebSerialPort(port, sendInitialNod = false) {
 }
 
 async function tryAutoReconnectWebSerial() {
-  if (!('serial' in navigator) || webSerialWriter) return false;
+  if (!userRequestedWebSerial || !('serial' in navigator) || webSerialWriter) return false;
   try {
     const grantedPorts = await navigator.serial.getPorts();
     if (grantedPorts && grantedPorts.length > 0) {
@@ -158,20 +160,52 @@ async function tryAutoReconnectWebSerial() {
   return false;
 }
 
+async function disconnectWebSerialArduino() {
+  userRequestedWebSerial = false;
+  try {
+    if (webSerialReader) {
+      await webSerialReader.cancel().catch(() => {});
+      webSerialReader.releaseLock();
+    }
+  } catch {}
+  webSerialReader = null;
+
+  try {
+    if (webSerialWriter) {
+      await webSerialWriter.close().catch(() => {});
+      webSerialWriter.releaseLock();
+    }
+  } catch {}
+  webSerialWriter = null;
+
+  try {
+    if (webSerialPort) {
+      await webSerialPort.close().catch(() => {});
+    }
+  } catch {}
+  webSerialPort = null;
+
+  if (el.btnConnectArduinoWeb) {
+    el.btnConnectArduinoWeb.classList.remove('connected');
+    el.btnConnectArduinoWeb.textContent = 'Conectar Arduino USB';
+  }
+}
+
 async function connectWebSerialArduino() {
   if (!('serial' in navigator)) {
     alert('Seu navegador não suporta Web Serial API. Use o Google Chrome ou Microsoft Edge no PC onde o Arduino está plugado.');
     return;
   }
 
-  // Se já estiver conectado, envia um aceno de teste
-  if (webSerialWriter) {
-    await sendGestureToArduino('nod_gentle');
+  // Se já estiver conectado, clicar no botão desconecta e libera a porta USB (para upload/reset)
+  if (webSerialWriter || webSerialPort) {
+    await disconnectWebSerialArduino();
     return;
   }
 
   try {
     const port = await navigator.serial.requestPort();
+    userRequestedWebSerial = true;
     await openGrantedWebSerialPort(port, true);
 
     port.addEventListener('disconnect', () => {
@@ -196,6 +230,7 @@ async function listenToArduinoSerialEvents(port) {
     const textDecoder = new TextDecoderStream();
     port.readable.pipeTo(textDecoder.writable).catch(() => {});
     const reader = textDecoder.readable.getReader();
+    webSerialReader = reader;
     let lineBuffer = '';
 
     while (true) {
