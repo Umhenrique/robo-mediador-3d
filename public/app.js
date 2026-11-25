@@ -396,7 +396,7 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
       if (robot3D.isSpeaking) {
         sendGestureToArduino('talk');
       }
-    }, 2600);
+    }, 4600);
   };
 
   try {

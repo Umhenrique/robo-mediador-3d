@@ -113,14 +113,14 @@ void startActionSequence(uint8_t mode, const int16_t* pts, uint8_t count, int16_
 void stopAndCenterIdle() {
   static const int16_t idlePts[1] = { 90 };
   if (currentAngle != 90) {
-    startActionSequence(MODE_IDLE, idlePts, 1, 20, 2);
+    startActionSequence(MODE_IDLE, idlePts, 1, 32, 1);
   } else {
     activeMode = MODE_IDLE;
     waypointCount = 0;
     waypointIndex = 0;
     applyModeLeds(MODE_IDLE);
     if (neckServo.attached()) {
-      detachAtTime = millis() + 200;
+      detachAtTime = millis() + 250;
     }
   }
 }
@@ -133,36 +133,35 @@ void executeGesture(String cmd) {
   cmd.trim();
 
   if (cmd == "G:nod") {
-    // Ouvindo / Confirmacao: 1 ciclo lateral expressivo (90 -> 118 -> 62 -> 90) e para
+    // Ouvindo / Confirmacao: movimento lateral calmo e suave (90 -> 118 -> 62 -> 90)
     playChime("listen");
     static const int16_t pts[3] = { 118, 62, 90 };
-    startActionSequence(MODE_NOD, pts, 3, 18, 2);
+    startActionSequence(MODE_NOD, pts, 3, 32, 1);
   }
   else if (cmd == "G:talk") {
-    // Falando (disparado em sincronia com o audio da voz do Bento):
-    // Gesticulacao lateral expressiva (90 -> 122 -> 58 -> 116 -> 64 -> 90)
+    // Falando (ritmo natural de conversa): (90 -> 122 -> 58 -> 116 -> 64 -> 90)
     static const int16_t pts[5] = { 122, 58, 116, 64, 90 };
-    startActionSequence(MODE_TALK, pts, 5, 16, 3);
+    startActionSequence(MODE_TALK, pts, 5, 28, 1);
   }
   else if (cmd == "G:care") {
-    // Acolhimento empatico (90 -> 120 -> 60 -> 90)
+    // Acolhimento empatico lento e gentil (90 -> 120 -> 60 -> 90)
     playChime("care");
     static const int16_t pts[3] = { 120, 60, 90 };
-    startActionSequence(MODE_CARE, pts, 3, 20, 2);
+    startActionSequence(MODE_CARE, pts, 3, 36, 1);
   }
   else if (cmd == "G:serious") {
-    // Postura seria (90 -> 116 -> 64 -> 90)
+    // Postura seria e pausada (90 -> 116 -> 64 -> 90)
     static const int16_t pts[3] = { 116, 64, 90 };
-    startActionSequence(MODE_SERIOUS, pts, 3, 22, 2);
+    startActionSequence(MODE_SERIOUS, pts, 3, 40, 1);
   }
   else if (cmd == "G:wave") {
-    // Despedida: aceno amplo de despedida (90 -> 130 -> 50 -> 128 -> 52 -> 90) e para
+    // Despedida suave e ampla (90 -> 130 -> 50 -> 128 -> 52 -> 90)
     playChime("done");
     static const int16_t pts[5] = { 130, 50, 128, 52, 90 };
-    startActionSequence(MODE_WAVE, pts, 5, 15, 3);
+    startActionSequence(MODE_WAVE, pts, 5, 24, 1);
   }
   else if (cmd == "G:idle") {
-    // Fim da fala / Espera: volta para 90 graus e fica parado aguardando a proxima acao
+    // Fim da fala / Espera: volta suavemente para 90 graus e fica parado
     stopAndCenterIdle();
   }
 
@@ -207,12 +206,12 @@ void updateServoMotion() {
 
   if (currentAngle == target) {
     waypointIndex++;
-    // Pausa suave de 120ms nas extremidades antes de inverter o sentido
-    pauseUntilTime = now + 120;
+    // Pausa natural de 240ms nas extremidades antes de inverter o sentido
+    pauseUntilTime = now + 240;
     if (waypointIndex >= waypointCount) {
       activeMode = MODE_IDLE;
       applyModeLeds(MODE_IDLE);
-      detachAtTime = now + 250;
+      detachAtTime = now + 300;
     }
   }
 }
