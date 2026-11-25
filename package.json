@@ -5,7 +5,10 @@
   "type": "module",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "arduino:compile": "node scripts/arduino-helper.mjs compile",
+    "arduino:upload": "node scripts/arduino-helper.mjs upload",
+    "arduino:test": "node scripts/arduino-helper.mjs test"
   },
   "dependencies": {
     "cors": "^2.8.5",
