@@ -109,7 +109,8 @@ def reader_loop():
                             sys.stdout.write(line + "\\n")
                             sys.stdout.flush()
         except Exception:
-            break
+            time.sleep(0.15)
+            continue
 
 t = threading.Thread(target=reader_loop, daemon=True)
 t.start()

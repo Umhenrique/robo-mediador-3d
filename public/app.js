@@ -116,6 +116,48 @@ const GESTURE_TO_ARDUINO_CMD = {
   idle: 'G:idle',
 };
 
+async function openGrantedWebSerialPort(port, sendInitialNod = false) {
+  try {
+    if (!port.readable || !port.writable) {
+      await port.open({ baudRate: 9600 });
+    }
+    const textEncoder = new TextEncoderStream();
+    textEncoder.readable.pipeTo(port.writable).catch(() => {});
+    webSerialWriter = textEncoder.writable.getWriter();
+    webSerialPort = port;
+
+    listenToArduinoSerialEvents(port);
+
+    if (el.btnConnectArduinoWeb) {
+      el.btnConnectArduinoWeb.classList.add('connected');
+      el.btnConnectArduinoWeb.textContent = 'Arduino USB Conectado';
+    }
+
+    if (sendInitialNod) {
+      setTimeout(() => {
+        sendGestureToArduino('nod_gentle');
+      }, 2300);
+    }
+    return true;
+  } catch (err) {
+    console.warn('[WebSerial] Falha ao abrir porta:', err.message);
+    webSerialWriter = null;
+    webSerialPort = null;
+    return false;
+  }
+}
+
+async function tryAutoReconnectWebSerial() {
+  if (!('serial' in navigator) || webSerialWriter) return false;
+  try {
+    const grantedPorts = await navigator.serial.getPorts();
+    if (grantedPorts && grantedPorts.length > 0) {
+      return await openGrantedWebSerialPort(grantedPorts[0], false);
+    }
+  } catch {}
+  return false;
+}
+
 async function connectWebSerialArduino() {
   if (!('serial' in navigator)) {
     alert('Seu navegador não suporta Web Serial API. Use o Google Chrome ou Microsoft Edge no PC onde o Arduino está plugado.');
@@ -130,25 +172,7 @@ async function connectWebSerialArduino() {
 
   try {
     const port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 9600 });
-
-    const textEncoder = new TextEncoderStream();
-    textEncoder.readable.pipeTo(port.writable).catch(() => {});
-    webSerialWriter = textEncoder.writable.getWriter();
-    webSerialPort = port;
-
-    // Escuta também eventos vindos DO Arduino UNO R3 (Botão físico de falar, botão de tom, sensor de presença)
-    listenToArduinoSerialEvents(port);
-
-    if (el.btnConnectArduinoWeb) {
-      el.btnConnectArduinoWeb.classList.add('connected');
-      el.btnConnectArduinoWeb.textContent = 'Arduino USB Conectado';
-    }
-
-    // Aguarda 2.3s caso o Arduino UNO tenha reiniciado ao abrir a porta e manda um aceno de confirmação
-    setTimeout(() => {
-      sendGestureToArduino('nod_gentle');
-    }, 2300);
+    await openGrantedWebSerialPort(port, true);
 
     port.addEventListener('disconnect', () => {
       webSerialWriter = null;
@@ -157,6 +181,10 @@ async function connectWebSerialArduino() {
         el.btnConnectArduinoWeb.classList.remove('connected');
         el.btnConnectArduinoWeb.textContent = 'Conectar Arduino USB';
       }
+      // Tenta reconectar automaticamente caso tenha sido apenas oscilação rápida da USB
+      setTimeout(() => {
+        tryAutoReconnectWebSerial();
+      }, 900);
     });
   } catch (err) {
     console.warn('[WebSerial] Conexão cancelada ou falhou:', err.message);
@@ -205,12 +233,22 @@ async function sendGestureToArduino(gestureName) {
   const cmd = GESTURE_TO_ARDUINO_CMD[gestureName] || 'G:nod';
 
   // 1. Se o usuário conectou o Arduino pelo navegador (Web Serial API — funciona mesmo no Google Colab!)
+  if (!webSerialWriter && 'serial' in navigator) {
+    await tryAutoReconnectWebSerial();
+  }
   if (webSerialWriter) {
     try {
       await webSerialWriter.write(`${cmd}\n`);
       return;
     } catch {
       webSerialWriter = null;
+      webSerialPort = null;
+      if (await tryAutoReconnectWebSerial() && webSerialWriter) {
+        try {
+          await webSerialWriter.write(`${cmd}\n`);
+          return;
+        } catch {}
+      }
     }
   }
 
@@ -562,6 +600,7 @@ function selectMessageOption(optionKey) {
   };
   const g = gestureByAttitude[opt.robotAttitude] || gestureByAttitude.warm;
   robot3D.setEmotionAndGesture(g.emotion, g.gesture);
+  sendGestureToArduino(g.gesture);
 }
 
 async function applyCustomTone(feedbackText) {

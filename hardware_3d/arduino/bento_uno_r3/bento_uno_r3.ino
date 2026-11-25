@@ -43,8 +43,10 @@
  */
 
 #include <Servo.h>
+#include <EEPROM.h>
 
 Servo neckServo;
+const int EEPROM_ADDR_ANGLE = 10;
 
 // Pinos Principais
 const int PIN_SERVO_NECK = 9;
@@ -61,7 +63,11 @@ const int PIN_ULTRA_ECHO = 5;  // Sensor HC-SR04 Echo (opcional)
 
 const int ANGLE_NEUTRAL = 90;
 int currentAngle = ANGLE_NEUTRAL;
+int currentPulseUs = 1472; // 90 graus em microssegundos
 bool servoAligned = false;
+bool isIdleBreathing = true;
+unsigned long lastIdleBreathTime = 0;
+int idleBreathDir = 1;
 
 String inputBuffer = "";
 
@@ -100,94 +106,110 @@ void playChime(String type) {
   }
 }
 
-// Envia um pulso PWM individual ao servo com intervalo de recarga do capacitor 5V da USB
-// (Evita pico de corrente >500mA que derruba a porta USB do notebook no Linux/Windows)
-void pulseServoSoft(int angle, int restMs) {
-  int clamped = constrain(angle, 55, 125);
-  int pulseUs = map(clamped, 0, 180, 544, 2400);
+// Envia um pulso PWM em microssegundos com intervalo longo (95ms+) de recarga da linha 5V USB
+void pulseUsSoft(int pulseUs, int restMs) {
+  pulseUs = constrain(pulseUs, 1430, 1515);
+  EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)(pulseUs - 1400));
   digitalWrite(PIN_SERVO_NECK, HIGH);
   delayMicroseconds(pulseUs);
   digitalWrite(PIN_SERVO_NECK, LOW);
   delay(restMs);
 }
 
-// Move o servo SG90 suavemente com limitacao de corrente de partida (soft-start USB-safe)
+// Move o servo SG90 estritamente dentro da banda proporcional (passos de 10us = ~0.95 grau)
+// com 95ms de descanso entre pulsos (zero saturacao da ponte H e zero queda da USB!)
 void moveSmooth(int targetAngle, int stepDelayMs) {
-  targetAngle = constrain(targetAngle, 55, 125);
+  targetAngle = constrain(targetAngle, 87, 93);
+  int targetUs = map(targetAngle, 0, 180, 544, 2400);
 
-  // Na primeira movimentacao, alinha o eixo em micro-pulsos espaçados para nao puxar pico de corrente
   if (!servoAligned) {
-    for (int i = 0; i < 4; i++) {
-      pulseServoSoft(currentAngle, 65);
-    }
+    pulseUsSoft(currentPulseUs, 95);
     servoAligned = true;
   }
 
-  int restMs = max(stepDelayMs * 2, 28);
-  while (currentAngle != targetAngle) {
-    if (currentAngle < targetAngle) {
-      currentAngle = min(currentAngle + 2, targetAngle);
+  int stepUs = 10; // ~0.95 grau por pulso (dentro da banda proporcional do SG90)
+  int restMs = max(stepDelayMs * 6, 95);
+
+  while (currentPulseUs != targetUs) {
+    if (currentPulseUs < targetUs) {
+      currentPulseUs = min(currentPulseUs + stepUs, targetUs);
     } else {
-      currentAngle = max(currentAngle - 2, targetAngle);
+      currentPulseUs = max(currentPulseUs - stepUs, targetUs);
     }
-    pulseServoSoft(currentAngle, restMs);
+    pulseUsSoft(currentPulseUs, restMs);
   }
-  // Pulso final de estabilizacao e depois mantem pino LOW (0 mA em repouso)
-  pulseServoSoft(currentAngle, 30);
+  currentAngle = targetAngle;
+  delay(120);
 }
 
 void executeGesture(String cmd) {
   cmd.trim();
+  int gIdx = cmd.lastIndexOf("G:");
+  if (gIdx < 0) return;
+  cmd = cmd.substring(gIdx);
+  cmd.trim();
+
+  lastIdleBreathTime = millis();
 
   if (cmd == "G:nod") {
     // Ouvindo o idoso / Aceno afirmativo suave (Verde)
+    isIdleBreathing = false;
     setChestColor(0, 255, 40);
     playChime("listen");
-    moveSmooth(108, 12);
-    moveSmooth(82, 12);
-    moveSmooth(104, 12);
-    moveSmooth(ANGLE_NEUTRAL, 14);
+    moveSmooth(93, 16);
+    moveSmooth(87, 16);
+    moveSmooth(ANGLE_NEUTRAL, 16);
+    isIdleBreathing = true;
   }
   else if (cmd == "G:serious") {
     // Opcao 9 (Seriously / Weight Shift): Azul profundo e inclinacao seria
+    isIdleBreathing = false;
     setChestColor(0, 80, 255);
-    moveSmooth(112, 18);
+    moveSmooth(93, 17);
+    isIdleBreathing = true;
   }
   else if (cmd == "G:care") {
     // Opcao 11 (Anxious Care / Empatia): Ambar acolhedor
+    isIdleBreathing = false;
     setChestColor(255, 140, 0);
     playChime("care");
-    moveSmooth(102, 15);
-    delay(160);
-    moveSmooth(84, 15);
-    moveSmooth(98, 15);
+    moveSmooth(93, 16);
+    delay(100);
+    moveSmooth(87, 16);
+    moveSmooth(ANGLE_NEUTRAL, 16);
+    isIdleBreathing = true;
   }
   else if (cmd == "G:talk") {
     // Bento falando (Ciano / Azul claro)
+    isIdleBreathing = false;
     setChestColor(0, 180, 255);
-    moveSmooth(98, 14);
-    moveSmooth(85, 14);
-    moveSmooth(95, 14);
-    moveSmooth(ANGLE_NEUTRAL, 14);
+    moveSmooth(93, 16);
+    moveSmooth(87, 16);
+    moveSmooth(ANGLE_NEUTRAL, 16);
+    isIdleBreathing = true;
   }
   else if (cmd == "G:wave") {
     // Despedida / Recado enviado
+    isIdleBreathing = false;
     playChime("done");
-    for (int i = 0; i < 3; i++) {
-      setChestColor(0, 255, 180);
-      moveSmooth(110, 10);
-      setChestColor(255, 180, 0);
-      moveSmooth(75, 10);
-    }
-    moveSmooth(ANGLE_NEUTRAL, 15);
+    setChestColor(0, 255, 180);
+    moveSmooth(93, 16);
+    setChestColor(255, 180, 0);
+    moveSmooth(87, 16);
+    moveSmooth(ANGLE_NEUTRAL, 16);
     setChestColor(0, 200, 80);
+    isIdleBreathing = true;
   }
   else if (cmd == "G:idle") {
-    // Repouso calmo
+    // Repouso calmo com movimento suave de respiracao/acomodacao idle
+    isIdleBreathing = true;
     setChestColor(0, 180, 60);
-    moveSmooth(ANGLE_NEUTRAL, 16);
+    moveSmooth(92, 17);
+    moveSmooth(88, 17);
+    moveSmooth(ANGLE_NEUTRAL, 17);
   }
   digitalWrite(PIN_SERVO_NECK, LOW);
+  lastIdleBreathTime = millis();
   Serial.print("ACK:");
   Serial.println(cmd);
 }
@@ -249,6 +271,16 @@ void setup() {
 
   pinMode(PIN_SERVO_NECK, OUTPUT);
   digitalWrite(PIN_SERVO_NECK, LOW);
+
+  uint8_t savedOffset = EEPROM.read(EEPROM_ADDR_ANGLE);
+  if (savedOffset >= 30 && savedOffset <= 115) {
+    currentPulseUs = 1400 + savedOffset;
+  } else {
+    currentPulseUs = map(ANGLE_NEUTRAL, 0, 180, 544, 2400);
+    EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)(currentPulseUs - 1400));
+  }
+  currentAngle = ANGLE_NEUTRAL;
+
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_LED_BLUE, OUTPUT);
   pinMode(PIN_LED_RED, OUTPUT);
@@ -269,17 +301,32 @@ void setup() {
 
 void loop() {
   // 1. Le comandos enviados pelo Navegador (Web Serial do Colab) ou pelo Servidor Local
+  //    (Protegido contra probes AT/QCDM do ModemManager no Linux que enviam \r ou bytes binarios)
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
-    if (c == '\n') {
-      executeGesture(inputBuffer);
-      inputBuffer = "";
-    } else if (c != '\r') {
+    if (c == '\n' || c == '\r') {
+      if (inputBuffer.length() > 0) {
+        executeGesture(inputBuffer);
+        inputBuffer = "";
+      }
+    } else if (c >= 32 && c <= 126) {
+      if (inputBuffer.length() >= 32) {
+        inputBuffer = "";
+      }
       inputBuffer += c;
     }
   }
 
-  // 2. Le botoes fisicos e sensor de presenca opcionais na protoboard
+  // 2. Respiracao/movimento sutil de Idle a cada 5s quando em repouso (sem bloquear comandos seriais)
+  if (isIdleBreathing && (millis() - lastIdleBreathTime > 5000) && Serial.available() == 0) {
+    int breathTarget = (idleBreathDir > 0) ? 92 : 88;
+    idleBreathDir = -idleBreathDir;
+    moveSmooth(breathTarget, 18);
+    digitalWrite(PIN_SERVO_NECK, LOW);
+    lastIdleBreathTime = millis();
+  }
+
+  // 3. Le botoes fisicos e sensor de presenca opcionais na protoboard
   checkPhysicalButtons();
   checkUltrasonicPresence();
 }
