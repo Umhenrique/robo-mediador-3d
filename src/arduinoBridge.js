@@ -81,6 +81,7 @@ except Exception as exc:
     sys.exit(1)
 
 stop_event = threading.Event()
+ready_event = threading.Event()
 
 def reader_loop():
     buf = b""
@@ -91,6 +92,8 @@ def reader_loop():
                 if raw:
                     line = raw.decode('utf-8', errors='ignore').strip()
                     if line:
+                        if 'BENTO_ARDUINO_READY' in line:
+                            ready_event.set()
                         sys.stdout.write(line + "\\n")
                         sys.stdout.flush()
             else:
@@ -101,6 +104,8 @@ def reader_loop():
                         part, buf = buf.split(b"\\n", 1)
                         line = part.decode('utf-8', errors='ignore').strip()
                         if line:
+                            if 'BENTO_ARDUINO_READY' in line:
+                                ready_event.set()
                             sys.stdout.write(line + "\\n")
                             sys.stdout.flush()
         except Exception:
@@ -109,8 +114,9 @@ def reader_loop():
 t = threading.Thread(target=reader_loop, daemon=True)
 t.start()
 
-# Aguarda estabilizacao inicial caso a placa tenha resetado ao abrir a porta pela 1a vez
-time.sleep(1.8)
+# Aguarda BENTO_ARDUINO_READY (ou ate 2.4s) caso a placa tenha resetado ao abrir a porta pela 1a vez
+ready_event.wait(timeout=2.4)
+time.sleep(0.1)
 
 try:
     for line in sys.stdin:

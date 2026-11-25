@@ -59,8 +59,8 @@ if (action === 'test') {
   }
   console.log(`[Arduino] Porta detectada: ${port}. Enviando gesto "${gesture}"...`);
   const ok = await sendArduinoGesture(gesture);
-  // Aguarda o tempo de estabilizacao inicial do worker (1.8s) + execucao do gesto
-  await new Promise((r) => setTimeout(r, 2600));
+  // Aguarda o tempo de boot inicial do Arduino (~2s) + execucao completa do gesto no servo
+  await new Promise((r) => setTimeout(r, 4200));
   closeArduinoBridge();
   if (!ok) {
     console.error('[Arduino] Falha ao enviar gesto.');

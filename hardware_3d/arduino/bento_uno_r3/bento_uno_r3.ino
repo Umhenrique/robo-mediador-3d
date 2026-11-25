@@ -99,9 +99,14 @@ void playChime(String type) {
   }
 }
 
-// Move o servo SG90 suavemente sem trancos
+// Move o servo SG90 suavemente sem trancos (ativa o PWM apenas durante o movimento para evitar pico de corrente/queda da USB no boot)
 void moveSmooth(int targetAngle, int stepDelayMs) {
   targetAngle = constrain(targetAngle, 55, 125);
+  if (!neckServo.attached()) {
+    neckServo.attach(PIN_SERVO_NECK);
+    neckServo.write(currentAngle);
+    delay(20);
+  }
   while (currentAngle != targetAngle) {
     if (currentAngle < targetAngle) {
       currentAngle++;
@@ -163,6 +168,11 @@ void executeGesture(String cmd) {
     // Repouso calmo
     setChestColor(0, 180, 60);
     moveSmooth(ANGLE_NEUTRAL, 16);
+  }
+
+  if (neckServo.attached()) {
+    delay(60);
+    neckServo.detach();
   }
 }
 
@@ -233,14 +243,8 @@ void setup() {
   pinMode(PIN_ULTRA_TRIG, OUTPUT);
   pinMode(PIN_ULTRA_ECHO, INPUT);
 
-  neckServo.attach(PIN_SERVO_NECK);
-  neckServo.write(ANGLE_NEUTRAL);
-
-  // Teste rapido de inicializacao (1 aceno curto + luz verde)
+  // Evita acionar o motor SG90 durante a enumeracao USB do boot (previne queda de tensao / desconexao da porta USB)
   setChestColor(0, 220, 80);
-  playChime("listen");
-  moveSmooth(102, 15);
-  moveSmooth(ANGLE_NEUTRAL, 15);
 
   Serial.println("BENTO_ARDUINO_READY");
 }

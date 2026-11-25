@@ -145,10 +145,10 @@ async function connectWebSerialArduino() {
       el.btnConnectArduinoWeb.textContent = 'Arduino USB Conectado';
     }
 
-    // Aguarda 1.8s caso o Arduino UNO tenha reiniciado ao abrir a porta e manda um aceno de confirmação
+    // Aguarda 2.3s caso o Arduino UNO tenha reiniciado ao abrir a porta e manda um aceno de confirmação
     setTimeout(() => {
       sendGestureToArduino('nod_gentle');
-    }, 1800);
+    }, 2300);
 
     port.addEventListener('disconnect', () => {
       webSerialWriter = null;
