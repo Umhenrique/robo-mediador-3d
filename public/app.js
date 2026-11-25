@@ -135,8 +135,8 @@ async function openGrantedWebSerialPort(port, sendInitialNod = false) {
 
     if (sendInitialNod) {
       setTimeout(() => {
-        sendGestureToArduino('nod_gentle');
-      }, 2300);
+        sendGestureToArduino('idle');
+      }, 2200);
     }
     return true;
   } catch (err) {
@@ -382,13 +382,22 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
   if (!text) return;
   stopCurrentRobotAudio();
 
-  setRobotStatus(statusLabel, emotion, gesture, true);
+  el.robotStateText.textContent = statusLabel;
+  el.waveformBars.classList.add('active');
+  el.statusDot.classList.add('listening');
+  robot3D.setEmotionAndGesture(emotion, gesture);
   robot3D.setSpeakingState(true);
-  const talkGestureTimer = setInterval(() => {
-    if (robot3D.isSpeaking) {
-      sendGestureToArduino('talk');
-    }
-  }, 3600);
+
+  let talkGestureTimer = null;
+  const startPhysicalTalkSync = () => {
+    sendGestureToArduino(gesture === 'wave_farewell' ? 'wave_farewell' : 'talk');
+    if (talkGestureTimer) clearInterval(talkGestureTimer);
+    talkGestureTimer = setInterval(() => {
+      if (robot3D.isSpeaking) {
+        sendGestureToArduino('talk');
+      }
+    }, 2600);
+  };
 
   try {
     const res = await fetch('/api/tts', {
@@ -423,7 +432,7 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
           if (currentBufferSource === source) currentBufferSource = null;
           resolve();
         };
-        sendGestureToArduino('talk');
+        startPhysicalTalkSync();
         source.start(0);
       });
       return;
@@ -447,7 +456,7 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
         URL.revokeObjectURL(url);
         reject(e);
       };
-      sendGestureToArduino('talk');
+      startPhysicalTalkSync();
       audio.play().catch((err) => {
         URL.revokeObjectURL(url);
         reject(err);
@@ -461,12 +470,12 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
         u.lang = 'pt-BR';
         u.onend = resolve;
         u.onerror = resolve;
-        sendGestureToArduino('talk');
+        startPhysicalTalkSync();
         window.speechSynthesis.speak(u);
       });
     }
   } finally {
-    clearInterval(talkGestureTimer);
+    if (talkGestureTimer) clearInterval(talkGestureTimer);
     robot3D.setSpeakingState(false);
     setRobotStatus('Pronto para ouvir', emotion, 'idle', false);
   }
@@ -1001,7 +1010,7 @@ function resetSession() {
     : 'Olá! Eu sou o Bento. Como você está se sentindo hoje?';
   state.history.push({ role: 'assistant', content: greeting });
   el.liveTranscriptText.textContent = greeting;
-  setRobotStatus('Pronto para ouvir', 'warm', 'nod_gentle', false);
+  setRobotStatus('Pronto para ouvir', 'warm', 'idle', false);
 }
 
 el.btnNewConversation.addEventListener('click', resetSession);

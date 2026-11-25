@@ -1,16 +1,15 @@
 /*
  * ============================================================================
- * BENTO 3D — FIRMWARE ARDUINO UNO R3 (Master Kit) - TORQUE TOTAL (.noinit)
+ * BENTO 3D — FIRMWARE ARDUINO UNO R3 (Master Kit) - ACIONADO POR EVENTOS (.noinit)
  * ============================================================================
- * Por que __attribute__((section(".noinit"))) resolve 100% a perda de forca:
- * - Quando o Micro Servo SG90 faz forca para girar a cabeca impressa em 3D,
- *   o pico indutivo na linha 5V pode causar um micro-reset (BOD de 2ms) no ATmega328P.
- * - Sem ".noinit", o C runtime zerava as variaveis de volta para 90 graus a cada 2ms,
- *   travando o motor em 90 graus!
- * - Com ".noinit", a posicao atual (currentAngle), direcao (sweepDir) e modo (IDLE,
- *   NOD, TALK, WAVE, CARE, SERIOUS) sobrevivem intactos na SRAM atraves de qualquer
- *   micro-reset de 2ms, mantendo o torque maximo de 50Hz do Servo.h do inicio ao fim
- *   de todo o curso lateral (45 a 135 graus)!
+ * Comportamento:
+ *   - Ao ligar ou quando está em espera ("G:idle"): posiciona no centro (90°),
+ *     desliga o PWM do servo (detach = 0 mA, totalmente parado e silencioso) e
+ *     AGUARDA os comandos reais do projeto!
+ *   - Quando ocorre uma ação no projeto ("G:nod", "G:talk", "G:care", "G:serious",
+ *     "G:wave"): ativa o servo com torque total (Servo.h 50Hz + proteção .noinit),
+ *     executa a sequência lateral de waypoints correspondente à ação, retorna para
+ *     o centro (90°) e para novamente!
  * ============================================================================
  */
 
@@ -32,27 +31,28 @@ const int PIN_ULTRA_TRIG = 4;
 const int PIN_ULTRA_ECHO = 5;
 
 enum RobotMode : uint8_t {
-  MODE_IDLE = 0,
-  MODE_NOD = 1,
-  MODE_TALK = 2,
-  MODE_CARE = 3,
+  MODE_IDLE    = 0,
+  MODE_NOD     = 1,
+  MODE_TALK    = 2,
+  MODE_CARE    = 3,
   MODE_SERIOUS = 4,
-  MODE_WAVE = 5
+  MODE_WAVE    = 5
 };
 
-// Variaveis persistentes em SRAM (.noinit) que NAO sao resetadas para 90 graus em micro-resets de tensao!
-uint16_t noinitMagic __attribute__((section(".noinit")));
-uint8_t persistedMode __attribute__((section(".noinit")));
-int16_t currentAngle __attribute__((section(".noinit")));
-int8_t sweepDir __attribute__((section(".noinit")));
-int16_t sweepMin __attribute__((section(".noinit")));
-int16_t sweepMax __attribute__((section(".noinit")));
-int16_t stepIntervalMs __attribute__((section(".noinit")));
-int8_t stepSizeDeg __attribute__((section(".noinit")));
-uint16_t remainingCycles __attribute__((section(".noinit")));
+// Estado persistente em SRAM (.noinit) para sobreviver a qualquer micro-oscilacao de 5V
+// sem perder o waypoint atual da acao!
+uint16_t noinitMagic   __attribute__((section(".noinit")));
+uint8_t  activeMode    __attribute__((section(".noinit")));
+int16_t  currentAngle  __attribute__((section(".noinit")));
+uint8_t  waypointIndex __attribute__((section(".noinit")));
+uint8_t  waypointCount __attribute__((section(".noinit")));
+int16_t  waypoints[6]  __attribute__((section(".noinit")));
+int16_t  stepInterval  __attribute__((section(".noinit")));
+int8_t   stepDegrees   __attribute__((section(".noinit")));
 
 unsigned long lastServoStepTime = 0;
 unsigned long pauseUntilTime = 0;
+unsigned long detachAtTime = 0;
 String inputBuffer = "";
 
 // Controle de debounce dos botoes fisicos
@@ -91,15 +91,38 @@ void playChime(String type) {
   }
 }
 
-void configureMotion(uint8_t mode, int16_t minAng, int16_t maxAng, int16_t intervalMs, int8_t stepDeg, uint16_t cycles) {
-  persistedMode = mode;
-  sweepMin = minAng;
-  sweepMax = maxAng;
-  stepIntervalMs = intervalMs;
-  stepSizeDeg = stepDeg;
-  remainingCycles = cycles; // 0 = continuo ate proximo comando
+void startActionSequence(uint8_t mode, const int16_t* pts, uint8_t count, int16_t intervalMs, int8_t stepDeg) {
+  activeMode = mode;
+  waypointCount = min((uint8_t)6, count);
+  for (uint8_t i = 0; i < waypointCount; i++) {
+    waypoints[i] = pts[i];
+  }
+  waypointIndex = 0;
+  stepInterval = intervalMs;
+  stepDegrees = stepDeg;
   pauseUntilTime = 0;
+  detachAtTime = 0;
   applyModeLeds(mode);
+
+  if (!neckServo.attached()) {
+    neckServo.attach(PIN_SERVO_NECK);
+    neckServo.write(currentAngle);
+  }
+}
+
+void stopAndCenterIdle() {
+  static const int16_t idlePts[1] = { 90 };
+  if (currentAngle != 90) {
+    startActionSequence(MODE_IDLE, idlePts, 1, 20, 2);
+  } else {
+    activeMode = MODE_IDLE;
+    waypointCount = 0;
+    waypointIndex = 0;
+    applyModeLeds(MODE_IDLE);
+    if (neckServo.attached()) {
+      detachAtTime = millis() + 200;
+    }
+  }
 }
 
 void executeGesture(String cmd) {
@@ -110,31 +133,37 @@ void executeGesture(String cmd) {
   cmd.trim();
 
   if (cmd == "G:nod") {
-    // Ouvindo / Pensando: movimento lateral amplo e vigoroso (52° <-> 128°, 76° de curso)
+    // Ouvindo / Confirmacao: 1 ciclo lateral expressivo (90 -> 118 -> 62 -> 90) e para
     playChime("listen");
-    configureMotion(MODE_NOD, 52, 128, 16, 2, 0);
+    static const int16_t pts[3] = { 118, 62, 90 };
+    startActionSequence(MODE_NOD, pts, 3, 18, 2);
   }
   else if (cmd == "G:talk") {
-    // Respondendo / Falando: movimento expressivo continuo sincronizado com a voz (48° <-> 132°, 84° de curso)
-    configureMotion(MODE_TALK, 48, 132, 14, 3, 0);
+    // Falando (disparado em sincronia com o audio da voz do Bento):
+    // Gesticulacao lateral expressiva (90 -> 122 -> 58 -> 116 -> 64 -> 90)
+    static const int16_t pts[5] = { 122, 58, 116, 64, 90 };
+    startActionSequence(MODE_TALK, pts, 5, 16, 3);
   }
   else if (cmd == "G:care") {
-    // Acolhimento empatico (52° <-> 128°)
+    // Acolhimento empatico (90 -> 120 -> 60 -> 90)
     playChime("care");
-    configureMotion(MODE_CARE, 52, 128, 18, 2, 0);
+    static const int16_t pts[3] = { 120, 60, 90 };
+    startActionSequence(MODE_CARE, pts, 3, 20, 2);
   }
   else if (cmd == "G:serious") {
-    // Atitude seria / focada (58° <-> 122°)
-    configureMotion(MODE_SERIOUS, 58, 122, 20, 2, 0);
+    // Postura seria (90 -> 116 -> 64 -> 90)
+    static const int16_t pts[3] = { 116, 64, 90 };
+    startActionSequence(MODE_SERIOUS, pts, 3, 22, 2);
   }
   else if (cmd == "G:wave") {
-    // Despedida: 6 varreduras bem amplas e rapidas (42° <-> 138°, 96° de curso) e volta para espera
+    // Despedida: aceno amplo de despedida (90 -> 130 -> 50 -> 128 -> 52 -> 90) e para
     playChime("done");
-    configureMotion(MODE_WAVE, 42, 138, 12, 3, 6);
+    static const int16_t pts[5] = { 130, 50, 128, 52, 90 };
+    startActionSequence(MODE_WAVE, pts, 5, 15, 3);
   }
   else if (cmd == "G:idle") {
-    // Espera ativa: movimento lateral continuo e visivel (64° <-> 116°, 52° de curso)
-    configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
+    // Fim da fala / Espera: volta para 90 graus e fica parado aguardando a proxima acao
+    stopAndCenterIdle();
   }
 
   Serial.print("ACK:");
@@ -143,39 +172,49 @@ void executeGesture(String cmd) {
 
 void updateServoMotion() {
   unsigned long now = millis();
+
+  // Desliga o PWM do servo 250ms apos terminar a acao e chegar em 90 graus (fica 100% parado em espera!)
+  if (waypointIndex >= waypointCount) {
+    if (neckServo.attached()) {
+      if (detachAtTime == 0) {
+        detachAtTime = now + 250;
+      } else if (now >= detachAtTime) {
+        neckServo.detach();
+        digitalWrite(PIN_SERVO_NECK, LOW);
+        detachAtTime = 0;
+        activeMode = MODE_IDLE;
+      }
+    }
+    return;
+  }
+
+  if (!neckServo.attached()) {
+    neckServo.attach(PIN_SERVO_NECK);
+  }
+
   if (now < pauseUntilTime) return;
-  if (now - lastServoStepTime < (unsigned long)stepIntervalMs) return;
+  if (now - lastServoStepTime < (unsigned long)stepInterval) return;
   lastServoStepTime = now;
 
-  currentAngle += (int16_t)sweepDir * (int16_t)stepSizeDeg;
-
-  if (currentAngle >= sweepMax) {
-    currentAngle = sweepMax;
-    sweepDir = -1;
-    if (remainingCycles > 0) {
-      remainingCycles--;
-      if (remainingCycles == 0) {
-        configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
-      }
-    }
-    if (persistedMode == MODE_IDLE) {
-      pauseUntilTime = now + 250;
-    }
-  } else if (currentAngle <= sweepMin) {
-    currentAngle = sweepMin;
-    sweepDir = 1;
-    if (remainingCycles > 0) {
-      remainingCycles--;
-      if (remainingCycles == 0) {
-        configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
-      }
-    }
-    if (persistedMode == MODE_IDLE) {
-      pauseUntilTime = now + 250;
-    }
+  int16_t target = waypoints[waypointIndex];
+  if (currentAngle < target) {
+    currentAngle = min((int16_t)(currentAngle + stepDegrees), target);
+  } else if (currentAngle > target) {
+    currentAngle = max((int16_t)(currentAngle - stepDegrees), target);
   }
 
   neckServo.write(currentAngle);
+
+  if (currentAngle == target) {
+    waypointIndex++;
+    // Pausa suave de 120ms nas extremidades antes de inverter o sentido
+    pauseUntilTime = now + 120;
+    if (waypointIndex >= waypointCount) {
+      activeMode = MODE_IDLE;
+      applyModeLeds(MODE_IDLE);
+      detachAtTime = now + 250;
+    }
+  }
 }
 
 void checkPhysicalButtons() {
@@ -239,19 +278,32 @@ void setup() {
   pinMode(PIN_ULTRA_TRIG, OUTPUT);
   pinMode(PIN_ULTRA_ECHO, INPUT);
 
-  // Se for o primeiro boot a frio (ou memoria invalida), inicializa o estado IDLE
-  if (noinitMagic != 0xB371 || currentAngle < 35 || currentAngle > 145 || (sweepDir != 1 && sweepDir != -1)) {
-    noinitMagic = 0xB371;
+  if (noinitMagic != 0xB372 || currentAngle < 35 || currentAngle > 145 || waypointCount > 6) {
+    // Primeiro boot a frio: centraliza em 90 graus e fica PARADO aguardando acoes do projeto!
+    noinitMagic = 0xB372;
     currentAngle = 90;
-    sweepDir = 1;
-    configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
+    activeMode = MODE_IDLE;
+    waypointCount = 0;
+    waypointIndex = 0;
+    stepInterval = 20;
+    stepDegrees = 2;
+    applyModeLeds(MODE_IDLE);
+    neckServo.attach(PIN_SERVO_NECK);
+    neckServo.write(90);
+    detachAtTime = millis() + 400;
+  } else if (waypointIndex < waypointCount) {
+    // Se ocorreu um micro-reset de 2ms no meio de uma acao (ex: G:talk ou G:nod),
+    // continua imediatamente a acao do exato angulo atual ate terminar os waypoints!
+    applyModeLeds(activeMode);
+    neckServo.attach(PIN_SERVO_NECK);
+    neckServo.write(currentAngle);
   } else {
-    // Recupera instantaneamente o angulo e o modo em andamento sem voltar para 90 graus!
-    applyModeLeds(persistedMode);
+    // Ja estava parado em IDLE (90 graus): permanece parado sem mexer o servo!
+    activeMode = MODE_IDLE;
+    applyModeLeds(MODE_IDLE);
+    pinMode(PIN_SERVO_NECK, OUTPUT);
+    digitalWrite(PIN_SERVO_NECK, LOW);
   }
-
-  neckServo.attach(PIN_SERVO_NECK);
-  neckServo.write(currentAngle);
 
   Serial.println("BENTO_ARDUINO_READY");
 }
