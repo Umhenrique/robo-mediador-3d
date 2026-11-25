@@ -61,6 +61,7 @@ const int PIN_ULTRA_ECHO = 5;  // Sensor HC-SR04 Echo (opcional)
 
 const int ANGLE_NEUTRAL = 90;
 int currentAngle = ANGLE_NEUTRAL;
+bool servoAligned = false;
 
 String inputBuffer = "";
 
@@ -99,23 +100,40 @@ void playChime(String type) {
   }
 }
 
-// Move o servo SG90 suavemente sem trancos (ativa o PWM apenas durante o movimento para evitar pico de corrente/queda da USB no boot)
+// Envia um pulso PWM individual ao servo com intervalo de recarga do capacitor 5V da USB
+// (Evita pico de corrente >500mA que derruba a porta USB do notebook no Linux/Windows)
+void pulseServoSoft(int angle, int restMs) {
+  int clamped = constrain(angle, 55, 125);
+  int pulseUs = map(clamped, 0, 180, 544, 2400);
+  digitalWrite(PIN_SERVO_NECK, HIGH);
+  delayMicroseconds(pulseUs);
+  digitalWrite(PIN_SERVO_NECK, LOW);
+  delay(restMs);
+}
+
+// Move o servo SG90 suavemente com limitacao de corrente de partida (soft-start USB-safe)
 void moveSmooth(int targetAngle, int stepDelayMs) {
   targetAngle = constrain(targetAngle, 55, 125);
-  if (!neckServo.attached()) {
-    neckServo.attach(PIN_SERVO_NECK);
-    neckServo.write(currentAngle);
-    delay(20);
+
+  // Na primeira movimentacao, alinha o eixo em micro-pulsos espaçados para nao puxar pico de corrente
+  if (!servoAligned) {
+    for (int i = 0; i < 4; i++) {
+      pulseServoSoft(currentAngle, 65);
+    }
+    servoAligned = true;
   }
+
+  int restMs = max(stepDelayMs * 2, 28);
   while (currentAngle != targetAngle) {
     if (currentAngle < targetAngle) {
-      currentAngle++;
+      currentAngle = min(currentAngle + 2, targetAngle);
     } else {
-      currentAngle--;
+      currentAngle = max(currentAngle - 2, targetAngle);
     }
-    neckServo.write(currentAngle);
-    delay(stepDelayMs);
+    pulseServoSoft(currentAngle, restMs);
   }
+  // Pulso final de estabilizacao e depois mantem pino LOW (0 mA em repouso)
+  pulseServoSoft(currentAngle, 30);
 }
 
 void executeGesture(String cmd) {
@@ -169,11 +187,9 @@ void executeGesture(String cmd) {
     setChestColor(0, 180, 60);
     moveSmooth(ANGLE_NEUTRAL, 16);
   }
-
-  if (neckServo.attached()) {
-    delay(60);
-    neckServo.detach();
-  }
+  digitalWrite(PIN_SERVO_NECK, LOW);
+  Serial.print("ACK:");
+  Serial.println(cmd);
 }
 
 // Verifica os botoes fisicos opcionais (Pinos 2 e 3 com INPUT_PULLUP)
@@ -231,6 +247,8 @@ void checkUltrasonicPresence() {
 void setup() {
   Serial.begin(9600);
 
+  pinMode(PIN_SERVO_NECK, OUTPUT);
+  digitalWrite(PIN_SERVO_NECK, LOW);
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_LED_BLUE, OUTPUT);
   pinMode(PIN_LED_RED, OUTPUT);
