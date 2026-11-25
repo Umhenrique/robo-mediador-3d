@@ -384,6 +384,11 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
 
   setRobotStatus(statusLabel, emotion, gesture, true);
   robot3D.setSpeakingState(true);
+  const talkGestureTimer = setInterval(() => {
+    if (robot3D.isSpeaking) {
+      sendGestureToArduino('talk');
+    }
+  }, 3600);
 
   try {
     const res = await fetch('/api/tts', {
@@ -458,6 +463,7 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
       });
     }
   } finally {
+    clearInterval(talkGestureTimer);
     robot3D.setSpeakingState(false);
     setRobotStatus('Pronto para ouvir', emotion, 'idle', false);
   }

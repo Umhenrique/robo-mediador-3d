@@ -46,7 +46,7 @@
 #include <EEPROM.h>
 
 Servo neckServo;
-const int EEPROM_ADDR_ANGLE = 10;
+const int EEPROM_ADDR_ANGLE = 12;
 
 // Pinos Principais
 const int PIN_SERVO_NECK = 9;
@@ -106,31 +106,35 @@ void playChime(String type) {
   }
 }
 
-// Envia um pulso PWM em microssegundos com intervalo longo (95ms+) de recarga da linha 5V USB
+// Envia um pulso PWM em microssegundos com intervalo seguro (80ms+) de recarga da linha 5V USB
 void pulseUsSoft(int pulseUs, int restMs) {
-  pulseUs = constrain(pulseUs, 1430, 1515);
-  EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)(pulseUs - 1400));
+  pulseUs = constrain(pulseUs, 1400, 1545);
+  EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)((pulseUs - 1350) / 2));
   digitalWrite(PIN_SERVO_NECK, HIGH);
   delayMicroseconds(pulseUs);
   digitalWrite(PIN_SERVO_NECK, LOW);
   delay(restMs);
 }
 
-// Move o servo SG90 estritamente dentro da banda proporcional (passos de 10us = ~0.95 grau)
-// com 95ms de descanso entre pulsos (zero saturacao da ponte H e zero queda da USB!)
-void moveSmooth(int targetAngle, int stepDelayMs) {
-  targetAngle = constrain(targetAngle, 87, 93);
+// Move o servo SG90 na janela comprovada (stepUs=12us, restMs=80ms, faixa 84..96 graus)
+// Se estiver em respiracao idle e chegar um comando serial de atividade, interrompe o idle na hora!
+void moveSmooth(int targetAngle, int stepDelayMs, bool interruptibleBySerial = false) {
+  targetAngle = constrain(targetAngle, 84, 96);
   int targetUs = map(targetAngle, 0, 180, 544, 2400);
 
   if (!servoAligned) {
-    pulseUsSoft(currentPulseUs, 95);
+    pulseUsSoft(currentPulseUs, 85);
     servoAligned = true;
   }
 
-  int stepUs = 10; // ~0.95 grau por pulso (dentro da banda proporcional do SG90)
-  int restMs = max(stepDelayMs * 6, 95);
+  int stepUs = 12; // ~1.15 grau por pulso (dentro da banda proporcional do SG90)
+  int restMs = max(stepDelayMs * 5, 80);
 
   while (currentPulseUs != targetUs) {
+    if (interruptibleBySerial && Serial.available() > 0) {
+      digitalWrite(PIN_SERVO_NECK, LOW);
+      return;
+    }
     if (currentPulseUs < targetUs) {
       currentPulseUs = min(currentPulseUs + stepUs, targetUs);
     } else {
@@ -139,7 +143,7 @@ void moveSmooth(int targetAngle, int stepDelayMs) {
     pulseUsSoft(currentPulseUs, restMs);
   }
   currentAngle = targetAngle;
-  delay(120);
+  delay(110);
 }
 
 void executeGesture(String cmd) {
@@ -152,61 +156,71 @@ void executeGesture(String cmd) {
   lastIdleBreathTime = millis();
 
   if (cmd == "G:nod") {
-    // Ouvindo o idoso / Aceno afirmativo suave (Verde)
+    // Ouvindo o idoso / Aceno afirmativo duplo bem visivel (Verde)
     isIdleBreathing = false;
     setChestColor(0, 255, 40);
     playChime("listen");
-    moveSmooth(93, 16);
-    moveSmooth(87, 16);
+    moveSmooth(95, 16);
+    moveSmooth(85, 16);
+    moveSmooth(94, 16);
+    moveSmooth(86, 16);
     moveSmooth(ANGLE_NEUTRAL, 16);
     isIdleBreathing = true;
   }
   else if (cmd == "G:serious") {
-    // Opcao 9 (Seriously / Weight Shift): Azul profundo e inclinacao seria
+    // Opcao 9 (Seriously / Weight Shift): Azul profundo e mantem inclinacao seria
     isIdleBreathing = false;
     setChestColor(0, 80, 255);
-    moveSmooth(93, 17);
-    isIdleBreathing = true;
+    moveSmooth(84, 17);
+    moveSmooth(96, 17);
   }
   else if (cmd == "G:care") {
-    // Opcao 11 (Anxious Care / Empatia): Ambar acolhedor
+    // Opcao 11 (Anxious Care / Empatia): Ambar acolhedor com pausa empatica
     isIdleBreathing = false;
     setChestColor(255, 140, 0);
     playChime("care");
-    moveSmooth(93, 16);
-    delay(100);
-    moveSmooth(87, 16);
+    moveSmooth(95, 16);
+    delay(140);
+    moveSmooth(85, 16);
+    delay(140);
+    moveSmooth(94, 16);
     moveSmooth(ANGLE_NEUTRAL, 16);
     isIdleBreathing = true;
   }
   else if (cmd == "G:talk") {
-    // Bento falando (Ciano / Azul claro)
+    // Bento falando (Ciano / Azul claro) - gesticulacao continua de fala
     isIdleBreathing = false;
     setChestColor(0, 180, 255);
-    moveSmooth(93, 16);
-    moveSmooth(87, 16);
+    moveSmooth(95, 16);
+    moveSmooth(85, 16);
+    moveSmooth(94, 16);
+    moveSmooth(86, 16);
     moveSmooth(ANGLE_NEUTRAL, 16);
     isIdleBreathing = true;
   }
   else if (cmd == "G:wave") {
-    // Despedida / Recado enviado
+    // Despedida / Recado enviado (movimento amplo repetido)
     isIdleBreathing = false;
     playChime("done");
     setChestColor(0, 255, 180);
-    moveSmooth(93, 16);
+    moveSmooth(96, 16);
     setChestColor(255, 180, 0);
-    moveSmooth(87, 16);
+    moveSmooth(84, 16);
+    setChestColor(0, 255, 180);
+    moveSmooth(95, 16);
+    setChestColor(255, 180, 0);
+    moveSmooth(85, 16);
     moveSmooth(ANGLE_NEUTRAL, 16);
     setChestColor(0, 200, 80);
     isIdleBreathing = true;
   }
   else if (cmd == "G:idle") {
-    // Repouso calmo com movimento suave de respiracao/acomodacao idle
+    // Repouso calmo (volta ao centro e ativa respiracao idle)
     isIdleBreathing = true;
     setChestColor(0, 180, 60);
-    moveSmooth(92, 17);
-    moveSmooth(88, 17);
-    moveSmooth(ANGLE_NEUTRAL, 17);
+    moveSmooth(93, 18, true);
+    moveSmooth(88, 18, true);
+    moveSmooth(ANGLE_NEUTRAL, 18, true);
   }
   digitalWrite(PIN_SERVO_NECK, LOW);
   lastIdleBreathTime = millis();
@@ -272,12 +286,12 @@ void setup() {
   pinMode(PIN_SERVO_NECK, OUTPUT);
   digitalWrite(PIN_SERVO_NECK, LOW);
 
-  uint8_t savedOffset = EEPROM.read(EEPROM_ADDR_ANGLE);
-  if (savedOffset >= 30 && savedOffset <= 115) {
-    currentPulseUs = 1400 + savedOffset;
+  uint8_t savedHalfOffset = EEPROM.read(EEPROM_ADDR_ANGLE);
+  if (savedHalfOffset >= 15 && savedHalfOffset <= 110) {
+    currentPulseUs = 1350 + (int)savedHalfOffset * 2;
   } else {
     currentPulseUs = map(ANGLE_NEUTRAL, 0, 180, 544, 2400);
-    EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)(currentPulseUs - 1400));
+    EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)((currentPulseUs - 1350) / 2));
   }
   currentAngle = ANGLE_NEUTRAL;
 
@@ -317,11 +331,11 @@ void loop() {
     }
   }
 
-  // 2. Respiracao/movimento sutil de Idle a cada 5s quando em repouso (sem bloquear comandos seriais)
-  if (isIdleBreathing && (millis() - lastIdleBreathTime > 5000) && Serial.available() == 0) {
+  // 2. Respiracao/movimento sutil de Idle a cada 7s quando em repouso (interrompivel instantaneamente por comandos seriais!)
+  if (isIdleBreathing && (millis() - lastIdleBreathTime > 7000) && Serial.available() == 0) {
     int breathTarget = (idleBreathDir > 0) ? 92 : 88;
     idleBreathDir = -idleBreathDir;
-    moveSmooth(breathTarget, 18);
+    moveSmooth(breathTarget, 20, true);
     digitalWrite(PIN_SERVO_NECK, LOW);
     lastIdleBreathTime = millis();
   }
