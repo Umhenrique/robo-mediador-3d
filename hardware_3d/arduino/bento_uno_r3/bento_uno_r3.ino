@@ -1,77 +1,65 @@
 /*
  * ============================================================================
- * BENTO 3D — FIRMWARE ARDUINO UNO R3 (Master Kit) - VERSAO EXPANDIDA & SEGURA
+ * BENTO 3D — FIRMWARE ARDUINO UNO R3 (Master Kit) - SINCRONIZADO & CONTINUO
  * ============================================================================
- * 100% COMPATIVEL COM O MODELO 3D JA EM IMPRESSAO (NAO MUDA NENHUMA PECA 3D!).
- * Se voce ligar APENAS os 3 fios do Servo SG90 (Pino 9), tudo ja funciona 100%!
- * Os demais componentes do Master Kit sao PLUG-AND-PLAY OPCIONAIS (pode ligar na
- * protoboard ao lado ou no furo de 5mm que ja existe no peito do Bento):
+ * Motor Micro Servo 9g (SG90) montado no pescoco (giro lateral esquerda/direita):
+ *   - Pino 9  (PWM) : Fio Laranja do Micro Servo SG90
+ *   - 5V            : Fio Vermelho do Micro Servo SG90
+ *   - GND           : Fio Marrom do Micro Servo SG90
  *
- * MAPA DE PINOS NO ARDUINO UNO R3:
- * ----------------------------------------------------------------------------
- * [OBRIGATORIO - DENTRO DO PESCOCO DO BENTO 3D]
- *   - Pino 9  (PWM) : Fio Laranja do Micro Servo SG90 (Movimento da Cabeca)
- *                     (Fio Vermelho no 5V | Fio Marrom no GND)
- *
- * [OPCIONAIS DO MASTER KIT - NAO AFETAM A IMPRESSAO 3D]
- *   - Pino 2  (IN)  : Botao Fisico "Apertar para Falar" (Push Button do Kit)
- *                     -> Ligue um lado do botao no Pino 2 e o outro lado no GND!
- *                     (Usa INPUT_PULLUP interno: nao precisa nem de resistor!).
- *                     Quando o idoso aperta esse botao fisico, o navegador no
- *                     Google Colab abre o microfone sozinho!
- *
- *   - Pino 3  (IN)  : Botao Fisico 2 "Mudar Tom / Aprovar" (Opcional)
- *                     -> Ligue um lado do botao no Pino 3 e o outro no GND.
- *
- *   - Pino 8  (OUT) : Buzzer Passivo do Kit (Sons fofos estilo robo quando ouve/envia)
- *                     -> Pino positivo (+) do Buzzer no Pino 8 | Negativo no GND.
- *
- *   - Pinos 10, 11 e 6 (PWM) : LED do Peito (Encaixa no furo de 5mm que ja existe no peito!)
- *                     -> Funciona tanto com 1 LED simples (no Pino 10) quanto com o
- *                        LED RGB de 4 pernas do Master Kit:
- *                        * Pino 10 = Verde (Ouvindo / Calmo)
- *                        * Pino 11 = Azul  (Falando / Atitude Seria Opcao 9)
- *                        * Pino 6  = Vermelho (Mistura com Verde para fazer Ambar na Opcao 11!)
- *
- *   - Pinos 4 (TRIG) e 5 (ECHO) : Sensor Ultrassonico HC-SR04 (Presenca do Idoso)
- *                     -> Se voce espetar o sensor HC-SR04 na protoboard, quando o
- *                        idoso sentar a menos de 50cm, o Arduino avisa o navegador
- *                        ("EVT:PRESENCE") e o Bento cumprimenta o idoso!
- *                        (Se o sensor nao estiver conectado, o codigo detecta timeout
- *                        em 3 milissegundos e ignora automaticamente sem travar nada!).
+ * Arquitetura de Maquina de Estados Nao-Bloqueante (Servo.h 50Hz continuo):
+ *   - "G:idle\n"    -> Movimento continuo e suave de ESPERA (68° <-> 112°, 44° de amplitude)
+ *   - "G:nod\n"     -> Movimento atento OUVINDO / PROCESSANDO (56° <-> 124°, 68° de amplitude)
+ *   - "G:talk\n"    -> Movimento expressivo continuo SINCRONIZADO COM A FALA (50° <-> 130°, 80° de amplitude)
+ *   - "G:care\n"    -> Movimento acolhedor empatico (54° <-> 126°, 72° de amplitude)
+ *   - "G:serious\n" -> Movimento focado e serio (62° <-> 118°, 56° de amplitude)
+ *   - "G:wave\n"    -> Giro amplo e rapido de DESPEDIDA (45° <-> 135°, 90° de amplitude)
  * ============================================================================
  */
 
 #include <Servo.h>
-#include <EEPROM.h>
 
 Servo neckServo;
-const int EEPROM_ADDR_ANGLE = 12;
 
 // Pinos Principais
 const int PIN_SERVO_NECK = 9;
-const int PIN_LED_GREEN  = 10; // LED simples ou perna Verde do LED RGB
-const int PIN_LED_BLUE   = 11; // Segundo LED ou perna Azul do LED RGB
-const int PIN_LED_RED    = 6;  // Perna Vermelha do LED RGB (opcional)
+const int PIN_LED_GREEN  = 10;
+const int PIN_LED_BLUE   = 11;
+const int PIN_LED_RED    = 6;
 
 // Pinos Extras Opcionais na Protoboard (Master Kit)
-const int PIN_BTN_TALK   = 2;  // Botao fisico para falar (entre Pino 2 e GND)
-const int PIN_BTN_TONE   = 3;  // Botao fisico para mudar tom (entre Pino 3 e GND)
-const int PIN_BUZZER     = 8;  // Buzzer do kit (entre Pino 8 e GND)
-const int PIN_ULTRA_TRIG = 4;  // Sensor HC-SR04 Trig (opcional)
-const int PIN_ULTRA_ECHO = 5;  // Sensor HC-SR04 Echo (opcional)
+const int PIN_BTN_TALK   = 2;
+const int PIN_BTN_TONE   = 3;
+const int PIN_BUZZER     = 8;
+const int PIN_ULTRA_TRIG = 4;
+const int PIN_ULTRA_ECHO = 5;
 
-const int ANGLE_NEUTRAL = 90;
-int currentAngle = ANGLE_NEUTRAL;
-int currentPulseUs = 1472; // 90 graus em microssegundos
-bool servoAligned = false;
-bool isIdleBreathing = true;
-unsigned long lastIdleBreathTime = 0;
-int idleBreathDir = 1;
+enum RobotMode {
+  MODE_IDLE,
+  MODE_NOD,
+  MODE_TALK,
+  MODE_CARE,
+  MODE_SERIOUS,
+  MODE_WAVE
+};
+
+RobotMode currentMode = MODE_IDLE;
+unsigned long modeStartTime = 0;
+unsigned long modeDurationMs = 0; // 0 = continuo ate proximo comando
+
+// Estado do servo (100% nao-bloqueante via millis)
+int currentAngle = 90;
+int sweepDir = 1;
+int sweepMin = 68;
+int sweepMax = 112;
+int stepIntervalMs = 26;
+int stepSizeDeg = 1;
+unsigned long lastServoStepTime = 0;
+unsigned long pauseUntilTime = 0;
 
 String inputBuffer = "";
 
-// Controle de debounce dos botoes fisicos (evita falsos cliques)
+// Controle de debounce dos botoes fisicos
 unsigned long lastBtnTalkTime = 0;
 unsigned long lastBtnToneTime = 0;
 int lastBtnTalkState = HIGH;
@@ -82,68 +70,31 @@ unsigned long lastUltraCheck = 0;
 bool elderPresent = false;
 unsigned long lastPresenceTrigger = 0;
 
-// Define a cor do LED (funciona tanto para LED simples no pino 10/11 quanto para LED RGB)
 void setChestColor(int r, int g, int b) {
   analogWrite(PIN_LED_RED, r);
-  analogWrite(PIN_LED_GREEN, g);
+  digitalWrite(PIN_LED_GREEN, g > 100 ? HIGH : LOW);
   analogWrite(PIN_LED_BLUE, b);
 }
 
-// Toca bipes melodicos curtos e suaves no Buzzer (se estiver espetado no pino 8)
 void playChime(String type) {
   if (type == "listen") {
-    tone(PIN_BUZZER, 587, 70); // Re5
-    delay(75);
-    tone(PIN_BUZZER, 880, 90); // La5 (subindo = pronto para ouvir)
+    tone(PIN_BUZZER, 587, 60);
   } else if (type == "done") {
     tone(PIN_BUZZER, 880, 70);
-    delay(75);
-    tone(PIN_BUZZER, 1046, 110); // Do6
   } else if (type == "care") {
-    tone(PIN_BUZZER, 659, 80);
-    delay(85);
-    tone(PIN_BUZZER, 784, 100);
+    tone(PIN_BUZZER, 659, 65);
   }
 }
 
-// Envia um pulso PWM em microssegundos com intervalo seguro (80ms+) de recarga da linha 5V USB
-void pulseUsSoft(int pulseUs, int restMs) {
-  pulseUs = constrain(pulseUs, 1400, 1545);
-  EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)((pulseUs - 1350) / 2));
-  digitalWrite(PIN_SERVO_NECK, HIGH);
-  delayMicroseconds(pulseUs);
-  digitalWrite(PIN_SERVO_NECK, LOW);
-  delay(restMs);
-}
-
-// Move o servo SG90 na janela comprovada (stepUs=12us, restMs=80ms, faixa 84..96 graus)
-// Se estiver em respiracao idle e chegar um comando serial de atividade, interrompe o idle na hora!
-void moveSmooth(int targetAngle, int stepDelayMs, bool interruptibleBySerial = false) {
-  targetAngle = constrain(targetAngle, 84, 96);
-  int targetUs = map(targetAngle, 0, 180, 544, 2400);
-
-  if (!servoAligned) {
-    pulseUsSoft(currentPulseUs, 85);
-    servoAligned = true;
-  }
-
-  int stepUs = 12; // ~1.15 grau por pulso (dentro da banda proporcional do SG90)
-  int restMs = max(stepDelayMs * 5, 80);
-
-  while (currentPulseUs != targetUs) {
-    if (interruptibleBySerial && Serial.available() > 0) {
-      digitalWrite(PIN_SERVO_NECK, LOW);
-      return;
-    }
-    if (currentPulseUs < targetUs) {
-      currentPulseUs = min(currentPulseUs + stepUs, targetUs);
-    } else {
-      currentPulseUs = max(currentPulseUs - stepUs, targetUs);
-    }
-    pulseUsSoft(currentPulseUs, restMs);
-  }
-  currentAngle = targetAngle;
-  delay(110);
+void configureMotion(RobotMode mode, int minAng, int maxAng, int intervalMs, int stepDeg, unsigned long durationMs) {
+  currentMode = mode;
+  sweepMin = minAng;
+  sweepMax = maxAng;
+  stepIntervalMs = intervalMs;
+  stepSizeDeg = stepDeg;
+  modeStartTime = millis();
+  modeDurationMs = durationMs;
+  pauseUntilTime = 0;
 }
 
 void executeGesture(String cmd) {
@@ -153,86 +104,84 @@ void executeGesture(String cmd) {
   cmd = cmd.substring(gIdx);
   cmd.trim();
 
-  lastIdleBreathTime = millis();
-
   if (cmd == "G:nod") {
-    // Ouvindo o idoso / Aceno afirmativo duplo bem visivel (Verde)
-    isIdleBreathing = false;
+    // Ouvindo / Pensando: movimento lateral amplo e atento (56° <-> 124°)
     setChestColor(0, 255, 40);
     playChime("listen");
-    moveSmooth(95, 16);
-    moveSmooth(85, 16);
-    moveSmooth(94, 16);
-    moveSmooth(86, 16);
-    moveSmooth(ANGLE_NEUTRAL, 16);
-    isIdleBreathing = true;
-  }
-  else if (cmd == "G:serious") {
-    // Opcao 9 (Seriously / Weight Shift): Azul profundo e mantem inclinacao seria
-    isIdleBreathing = false;
-    setChestColor(0, 80, 255);
-    moveSmooth(84, 17);
-    moveSmooth(96, 17);
-  }
-  else if (cmd == "G:care") {
-    // Opcao 11 (Anxious Care / Empatia): Ambar acolhedor com pausa empatica
-    isIdleBreathing = false;
-    setChestColor(255, 140, 0);
-    playChime("care");
-    moveSmooth(95, 16);
-    delay(140);
-    moveSmooth(85, 16);
-    delay(140);
-    moveSmooth(94, 16);
-    moveSmooth(ANGLE_NEUTRAL, 16);
-    isIdleBreathing = true;
+    configureMotion(MODE_NOD, 56, 124, 15, 2, 0);
   }
   else if (cmd == "G:talk") {
-    // Bento falando (Ciano / Azul claro) - gesticulacao continua de fala
-    isIdleBreathing = false;
+    // Respondendo / Falando: movimento expressivo continuo sincronizado com a voz (50° <-> 130°)
     setChestColor(0, 180, 255);
-    moveSmooth(95, 16);
-    moveSmooth(85, 16);
-    moveSmooth(94, 16);
-    moveSmooth(86, 16);
-    moveSmooth(ANGLE_NEUTRAL, 16);
-    isIdleBreathing = true;
+    configureMotion(MODE_TALK, 50, 130, 14, 2, 0);
+  }
+  else if (cmd == "G:care") {
+    // Acolhimento empatico (54° <-> 126°)
+    setChestColor(255, 140, 0);
+    playChime("care");
+    configureMotion(MODE_CARE, 54, 126, 18, 2, 0);
+  }
+  else if (cmd == "G:serious") {
+    // Atitude seria / focada (62° <-> 118°)
+    setChestColor(0, 80, 255);
+    configureMotion(MODE_SERIOUS, 62, 118, 20, 1, 0);
   }
   else if (cmd == "G:wave") {
-    // Despedida / Recado enviado (movimento amplo repetido)
-    isIdleBreathing = false;
+    // Despedida: giro bem amplo e animado (45° <-> 135°) por 4.5s e depois volta para espera
+    setChestColor(0, 255, 180);
     playChime("done");
-    setChestColor(0, 255, 180);
-    moveSmooth(96, 16);
-    setChestColor(255, 180, 0);
-    moveSmooth(84, 16);
-    setChestColor(0, 255, 180);
-    moveSmooth(95, 16);
-    setChestColor(255, 180, 0);
-    moveSmooth(85, 16);
-    moveSmooth(ANGLE_NEUTRAL, 16);
-    setChestColor(0, 200, 80);
-    isIdleBreathing = true;
+    configureMotion(MODE_WAVE, 45, 135, 12, 3, 4500);
   }
   else if (cmd == "G:idle") {
-    // Repouso calmo (volta ao centro e ativa respiracao idle)
-    isIdleBreathing = true;
+    // Espera ativa: movimento suave e visivel de um lado para o outro (68° <-> 112°)
     setChestColor(0, 180, 60);
-    moveSmooth(93, 18, true);
-    moveSmooth(88, 18, true);
-    moveSmooth(ANGLE_NEUTRAL, 18, true);
+    configureMotion(MODE_IDLE, 68, 112, 26, 1, 0);
   }
-  digitalWrite(PIN_SERVO_NECK, LOW);
-  lastIdleBreathTime = millis();
+
   Serial.print("ACK:");
   Serial.println(cmd);
 }
 
-// Verifica os botoes fisicos opcionais (Pinos 2 e 3 com INPUT_PULLUP)
+void updateServoMotion() {
+  unsigned long now = millis();
+
+  // Se um modo temporario (como wave) terminou, volta automaticamente para espera ativa (IDLE)
+  if (modeDurationMs > 0 && (now - modeStartTime >= modeDurationMs)) {
+    setChestColor(0, 180, 60);
+    configureMotion(MODE_IDLE, 68, 112, 26, 1, 0);
+  }
+
+  if (now < pauseUntilTime) return;
+  if (now - lastServoStepTime < (unsigned long)stepIntervalMs) return;
+  lastServoStepTime = now;
+
+  currentAngle += sweepDir * stepSizeDeg;
+
+  if (currentAngle >= sweepMax) {
+    currentAngle = sweepMax;
+    sweepDir = -1;
+    // Pequena pausa natural nas extremidades no modo de espera ou cuidado
+    if (currentMode == MODE_IDLE) {
+      pauseUntilTime = now + 350;
+    } else if (currentMode == MODE_CARE || currentMode == MODE_SERIOUS) {
+      pauseUntilTime = now + 180;
+    }
+  } else if (currentAngle <= sweepMin) {
+    currentAngle = sweepMin;
+    sweepDir = 1;
+    if (currentMode == MODE_IDLE) {
+      pauseUntilTime = now + 350;
+    } else if (currentMode == MODE_CARE || currentMode == MODE_SERIOUS) {
+      pauseUntilTime = now + 180;
+    }
+  }
+
+  neckServo.write(currentAngle);
+}
+
 void checkPhysicalButtons() {
   unsigned long now = millis();
 
-  // Botao 1 (Pino 2 -> GND): Apertar para Falar com o Bento
   int talkReading = digitalRead(PIN_BTN_TALK);
   if (talkReading == LOW && lastBtnTalkState == HIGH && (now - lastBtnTalkTime > 450)) {
     lastBtnTalkTime = now;
@@ -242,7 +191,6 @@ void checkPhysicalButtons() {
   }
   lastBtnTalkState = talkReading;
 
-  // Botao 2 (Pino 3 -> GND): Mudar Tom da Mensagem
   int toneReading = digitalRead(PIN_BTN_TONE);
   if (toneReading == LOW && lastBtnToneState == HIGH && (now - lastBtnToneTime > 450)) {
     lastBtnToneTime = now;
@@ -252,7 +200,6 @@ void checkPhysicalButtons() {
   lastBtnToneState = toneReading;
 }
 
-// Verifica o sensor ultrassonico HC-SR04 opcional (Pinos 4 e 5) a cada 800ms
 void checkUltrasonicPresence() {
   unsigned long now = millis();
   if (now - lastUltraCheck < 800) return;
@@ -264,7 +211,6 @@ void checkUltrasonicPresence() {
   delayMicroseconds(10);
   digitalWrite(PIN_ULTRA_TRIG, LOW);
 
-  // Timeout curto de 4000 us (~68 cm max) para nunca atrasar o loop se o sensor nao estiver conectado!
   long duration = pulseIn(PIN_ULTRA_ECHO, HIGH, 4000);
   if (duration > 100) {
     int distanceCm = duration * 0.034 / 2;
@@ -283,39 +229,28 @@ void checkUltrasonicPresence() {
 void setup() {
   Serial.begin(9600);
 
-  pinMode(PIN_SERVO_NECK, OUTPUT);
-  digitalWrite(PIN_SERVO_NECK, LOW);
-
-  uint8_t savedHalfOffset = EEPROM.read(EEPROM_ADDR_ANGLE);
-  if (savedHalfOffset >= 15 && savedHalfOffset <= 110) {
-    currentPulseUs = 1350 + (int)savedHalfOffset * 2;
-  } else {
-    currentPulseUs = map(ANGLE_NEUTRAL, 0, 180, 544, 2400);
-    EEPROM.update(EEPROM_ADDR_ANGLE, (uint8_t)((currentPulseUs - 1350) / 2));
-  }
-  currentAngle = ANGLE_NEUTRAL;
-
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_LED_BLUE, OUTPUT);
   pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
 
-  // INPUT_PULLUP mantem o pino em HIGH mesmo sem nada conectado (nunca gera clique fantasma!)
   pinMode(PIN_BTN_TALK, INPUT_PULLUP);
   pinMode(PIN_BTN_TONE, INPUT_PULLUP);
 
   pinMode(PIN_ULTRA_TRIG, OUTPUT);
   pinMode(PIN_ULTRA_ECHO, INPUT);
 
-  // Evita acionar o motor SG90 durante a enumeracao USB do boot (previne queda de tensao / desconexao da porta USB)
-  setChestColor(0, 220, 80);
+  neckServo.attach(PIN_SERVO_NECK);
+  neckServo.write(currentAngle);
+
+  setChestColor(0, 200, 80);
+  configureMotion(MODE_IDLE, 68, 112, 26, 1, 0);
 
   Serial.println("BENTO_ARDUINO_READY");
 }
 
 void loop() {
-  // 1. Le comandos enviados pelo Navegador (Web Serial do Colab) ou pelo Servidor Local
-  //    (Protegido contra probes AT/QCDM do ModemManager no Linux que enviam \r ou bytes binarios)
+  // 1. Le comandos seriais instantaneamente (0ms de bloqueio!)
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
@@ -331,16 +266,10 @@ void loop() {
     }
   }
 
-  // 2. Respiracao/movimento sutil de Idle a cada 7s quando em repouso (interrompivel instantaneamente por comandos seriais!)
-  if (isIdleBreathing && (millis() - lastIdleBreathTime > 7000) && Serial.available() == 0) {
-    int breathTarget = (idleBreathDir > 0) ? 92 : 88;
-    idleBreathDir = -idleBreathDir;
-    moveSmooth(breathTarget, 20, true);
-    digitalWrite(PIN_SERVO_NECK, LOW);
-    lastIdleBreathTime = millis();
-  }
+  // 2. Atualiza movimento continuo do servo de acordo com o estado atual (Espera, Ouvindo, Falando, Despedida)
+  updateServoMotion();
 
-  // 3. Le botoes fisicos e sensor de presenca opcionais na protoboard
+  // 3. Le botoes fisicos e sensor de presenca opcionais
   checkPhysicalButtons();
   checkUltrasonicPresence();
 }

@@ -423,6 +423,7 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
           if (currentBufferSource === source) currentBufferSource = null;
           resolve();
         };
+        sendGestureToArduino('talk');
         source.start(0);
       });
       return;
@@ -446,6 +447,7 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
         URL.revokeObjectURL(url);
         reject(e);
       };
+      sendGestureToArduino('talk');
       audio.play().catch((err) => {
         URL.revokeObjectURL(url);
         reject(err);
@@ -459,6 +461,7 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
         u.lang = 'pt-BR';
         u.onend = resolve;
         u.onerror = resolve;
+        sendGestureToArduino('talk');
         window.speechSynthesis.speak(u);
       });
     }
