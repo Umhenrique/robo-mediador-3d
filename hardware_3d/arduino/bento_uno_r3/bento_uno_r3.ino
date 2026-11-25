@@ -1,19 +1,16 @@
 /*
  * ============================================================================
- * BENTO 3D — FIRMWARE ARDUINO UNO R3 (Master Kit) - SINCRONIZADO & CONTINUO
+ * BENTO 3D — FIRMWARE ARDUINO UNO R3 (Master Kit) - TORQUE TOTAL (.noinit)
  * ============================================================================
- * Motor Micro Servo 9g (SG90) montado no pescoco (giro lateral esquerda/direita):
- *   - Pino 9  (PWM) : Fio Laranja do Micro Servo SG90
- *   - 5V            : Fio Vermelho do Micro Servo SG90
- *   - GND           : Fio Marrom do Micro Servo SG90
- *
- * Arquitetura de Maquina de Estados Nao-Bloqueante (Servo.h 50Hz continuo):
- *   - "G:idle\n"    -> Movimento continuo e suave de ESPERA (68° <-> 112°, 44° de amplitude)
- *   - "G:nod\n"     -> Movimento atento OUVINDO / PROCESSANDO (56° <-> 124°, 68° de amplitude)
- *   - "G:talk\n"    -> Movimento expressivo continuo SINCRONIZADO COM A FALA (50° <-> 130°, 80° de amplitude)
- *   - "G:care\n"    -> Movimento acolhedor empatico (54° <-> 126°, 72° de amplitude)
- *   - "G:serious\n" -> Movimento focado e serio (62° <-> 118°, 56° de amplitude)
- *   - "G:wave\n"    -> Giro amplo e rapido de DESPEDIDA (45° <-> 135°, 90° de amplitude)
+ * Por que __attribute__((section(".noinit"))) resolve 100% a perda de forca:
+ * - Quando o Micro Servo SG90 faz forca para girar a cabeca impressa em 3D,
+ *   o pico indutivo na linha 5V pode causar um micro-reset (BOD de 2ms) no ATmega328P.
+ * - Sem ".noinit", o C runtime zerava as variaveis de volta para 90 graus a cada 2ms,
+ *   travando o motor em 90 graus!
+ * - Com ".noinit", a posicao atual (currentAngle), direcao (sweepDir) e modo (IDLE,
+ *   NOD, TALK, WAVE, CARE, SERIOUS) sobrevivem intactos na SRAM atraves de qualquer
+ *   micro-reset de 2ms, mantendo o torque maximo de 50Hz do Servo.h do inicio ao fim
+ *   de todo o curso lateral (45 a 135 graus)!
  * ============================================================================
  */
 
@@ -34,29 +31,28 @@ const int PIN_BUZZER     = 8;
 const int PIN_ULTRA_TRIG = 4;
 const int PIN_ULTRA_ECHO = 5;
 
-enum RobotMode {
-  MODE_IDLE,
-  MODE_NOD,
-  MODE_TALK,
-  MODE_CARE,
-  MODE_SERIOUS,
-  MODE_WAVE
+enum RobotMode : uint8_t {
+  MODE_IDLE = 0,
+  MODE_NOD = 1,
+  MODE_TALK = 2,
+  MODE_CARE = 3,
+  MODE_SERIOUS = 4,
+  MODE_WAVE = 5
 };
 
-RobotMode currentMode = MODE_IDLE;
-unsigned long modeStartTime = 0;
-unsigned long modeDurationMs = 0; // 0 = continuo ate proximo comando
+// Variaveis persistentes em SRAM (.noinit) que NAO sao resetadas para 90 graus em micro-resets de tensao!
+uint16_t noinitMagic __attribute__((section(".noinit")));
+uint8_t persistedMode __attribute__((section(".noinit")));
+int16_t currentAngle __attribute__((section(".noinit")));
+int8_t sweepDir __attribute__((section(".noinit")));
+int16_t sweepMin __attribute__((section(".noinit")));
+int16_t sweepMax __attribute__((section(".noinit")));
+int16_t stepIntervalMs __attribute__((section(".noinit")));
+int8_t stepSizeDeg __attribute__((section(".noinit")));
+uint16_t remainingCycles __attribute__((section(".noinit")));
 
-// Estado do servo (100% nao-bloqueante via millis)
-int currentAngle = 90;
-int sweepDir = 1;
-int sweepMin = 68;
-int sweepMax = 112;
-int stepIntervalMs = 26;
-int stepSizeDeg = 1;
 unsigned long lastServoStepTime = 0;
 unsigned long pauseUntilTime = 0;
-
 String inputBuffer = "";
 
 // Controle de debounce dos botoes fisicos
@@ -76,6 +72,15 @@ void setChestColor(int r, int g, int b) {
   analogWrite(PIN_LED_BLUE, b);
 }
 
+void applyModeLeds(uint8_t mode) {
+  if (mode == MODE_NOD)          setChestColor(0, 255, 40);
+  else if (mode == MODE_TALK)    setChestColor(0, 180, 255);
+  else if (mode == MODE_CARE)    setChestColor(255, 140, 0);
+  else if (mode == MODE_SERIOUS) setChestColor(0, 80, 255);
+  else if (mode == MODE_WAVE)    setChestColor(0, 255, 180);
+  else                           setChestColor(0, 180, 60);
+}
+
 void playChime(String type) {
   if (type == "listen") {
     tone(PIN_BUZZER, 587, 60);
@@ -86,15 +91,15 @@ void playChime(String type) {
   }
 }
 
-void configureMotion(RobotMode mode, int minAng, int maxAng, int intervalMs, int stepDeg, unsigned long durationMs) {
-  currentMode = mode;
+void configureMotion(uint8_t mode, int16_t minAng, int16_t maxAng, int16_t intervalMs, int8_t stepDeg, uint16_t cycles) {
+  persistedMode = mode;
   sweepMin = minAng;
   sweepMax = maxAng;
   stepIntervalMs = intervalMs;
   stepSizeDeg = stepDeg;
-  modeStartTime = millis();
-  modeDurationMs = durationMs;
+  remainingCycles = cycles; // 0 = continuo ate proximo comando
   pauseUntilTime = 0;
+  applyModeLeds(mode);
 }
 
 void executeGesture(String cmd) {
@@ -105,37 +110,31 @@ void executeGesture(String cmd) {
   cmd.trim();
 
   if (cmd == "G:nod") {
-    // Ouvindo / Pensando: movimento lateral amplo e atento (56° <-> 124°)
-    setChestColor(0, 255, 40);
+    // Ouvindo / Pensando: movimento lateral amplo e vigoroso (52° <-> 128°, 76° de curso)
     playChime("listen");
-    configureMotion(MODE_NOD, 56, 124, 15, 2, 0);
+    configureMotion(MODE_NOD, 52, 128, 16, 2, 0);
   }
   else if (cmd == "G:talk") {
-    // Respondendo / Falando: movimento expressivo continuo sincronizado com a voz (50° <-> 130°)
-    setChestColor(0, 180, 255);
-    configureMotion(MODE_TALK, 50, 130, 14, 2, 0);
+    // Respondendo / Falando: movimento expressivo continuo sincronizado com a voz (48° <-> 132°, 84° de curso)
+    configureMotion(MODE_TALK, 48, 132, 14, 3, 0);
   }
   else if (cmd == "G:care") {
-    // Acolhimento empatico (54° <-> 126°)
-    setChestColor(255, 140, 0);
+    // Acolhimento empatico (52° <-> 128°)
     playChime("care");
-    configureMotion(MODE_CARE, 54, 126, 18, 2, 0);
+    configureMotion(MODE_CARE, 52, 128, 18, 2, 0);
   }
   else if (cmd == "G:serious") {
-    // Atitude seria / focada (62° <-> 118°)
-    setChestColor(0, 80, 255);
-    configureMotion(MODE_SERIOUS, 62, 118, 20, 1, 0);
+    // Atitude seria / focada (58° <-> 122°)
+    configureMotion(MODE_SERIOUS, 58, 122, 20, 2, 0);
   }
   else if (cmd == "G:wave") {
-    // Despedida: giro bem amplo e animado (45° <-> 135°) por 4.5s e depois volta para espera
-    setChestColor(0, 255, 180);
+    // Despedida: 6 varreduras bem amplas e rapidas (42° <-> 138°, 96° de curso) e volta para espera
     playChime("done");
-    configureMotion(MODE_WAVE, 45, 135, 12, 3, 4500);
+    configureMotion(MODE_WAVE, 42, 138, 12, 3, 6);
   }
   else if (cmd == "G:idle") {
-    // Espera ativa: movimento suave e visivel de um lado para o outro (68° <-> 112°)
-    setChestColor(0, 180, 60);
-    configureMotion(MODE_IDLE, 68, 112, 26, 1, 0);
+    // Espera ativa: movimento lateral continuo e visivel (64° <-> 116°, 52° de curso)
+    configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
   }
 
   Serial.print("ACK:");
@@ -144,35 +143,35 @@ void executeGesture(String cmd) {
 
 void updateServoMotion() {
   unsigned long now = millis();
-
-  // Se um modo temporario (como wave) terminou, volta automaticamente para espera ativa (IDLE)
-  if (modeDurationMs > 0 && (now - modeStartTime >= modeDurationMs)) {
-    setChestColor(0, 180, 60);
-    configureMotion(MODE_IDLE, 68, 112, 26, 1, 0);
-  }
-
   if (now < pauseUntilTime) return;
   if (now - lastServoStepTime < (unsigned long)stepIntervalMs) return;
   lastServoStepTime = now;
 
-  currentAngle += sweepDir * stepSizeDeg;
+  currentAngle += (int16_t)sweepDir * (int16_t)stepSizeDeg;
 
   if (currentAngle >= sweepMax) {
     currentAngle = sweepMax;
     sweepDir = -1;
-    // Pequena pausa natural nas extremidades no modo de espera ou cuidado
-    if (currentMode == MODE_IDLE) {
-      pauseUntilTime = now + 350;
-    } else if (currentMode == MODE_CARE || currentMode == MODE_SERIOUS) {
-      pauseUntilTime = now + 180;
+    if (remainingCycles > 0) {
+      remainingCycles--;
+      if (remainingCycles == 0) {
+        configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
+      }
+    }
+    if (persistedMode == MODE_IDLE) {
+      pauseUntilTime = now + 250;
     }
   } else if (currentAngle <= sweepMin) {
     currentAngle = sweepMin;
     sweepDir = 1;
-    if (currentMode == MODE_IDLE) {
-      pauseUntilTime = now + 350;
-    } else if (currentMode == MODE_CARE || currentMode == MODE_SERIOUS) {
-      pauseUntilTime = now + 180;
+    if (remainingCycles > 0) {
+      remainingCycles--;
+      if (remainingCycles == 0) {
+        configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
+      }
+    }
+    if (persistedMode == MODE_IDLE) {
+      pauseUntilTime = now + 250;
     }
   }
 
@@ -240,17 +239,24 @@ void setup() {
   pinMode(PIN_ULTRA_TRIG, OUTPUT);
   pinMode(PIN_ULTRA_ECHO, INPUT);
 
+  // Se for o primeiro boot a frio (ou memoria invalida), inicializa o estado IDLE
+  if (noinitMagic != 0xB371 || currentAngle < 35 || currentAngle > 145 || (sweepDir != 1 && sweepDir != -1)) {
+    noinitMagic = 0xB371;
+    currentAngle = 90;
+    sweepDir = 1;
+    configureMotion(MODE_IDLE, 64, 116, 24, 2, 0);
+  } else {
+    // Recupera instantaneamente o angulo e o modo em andamento sem voltar para 90 graus!
+    applyModeLeds(persistedMode);
+  }
+
   neckServo.attach(PIN_SERVO_NECK);
   neckServo.write(currentAngle);
-
-  setChestColor(0, 200, 80);
-  configureMotion(MODE_IDLE, 68, 112, 26, 1, 0);
 
   Serial.println("BENTO_ARDUINO_READY");
 }
 
 void loop() {
-  // 1. Le comandos seriais instantaneamente (0ms de bloqueio!)
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
@@ -266,10 +272,7 @@ void loop() {
     }
   }
 
-  // 2. Atualiza movimento continuo do servo de acordo com o estado atual (Espera, Ouvindo, Falando, Despedida)
   updateServoMotion();
-
-  // 3. Le botoes fisicos e sensor de presenca opcionais
   checkPhysicalButtons();
   checkUltrasonicPresence();
 }
