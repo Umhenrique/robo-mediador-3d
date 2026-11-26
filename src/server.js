@@ -109,11 +109,32 @@ app.post('/api/stt', async (req, res) => {
  *    - Mantém conexão WebSocket persistente com a Microsoft (evita ~500ms de handshake TLS por frase)
  *    - Cache LRU em memória + deduplicação de sínteses em andamento (inFlightTTS)
  */
-const ttsIdlePoolByVoice = new Map();
 const ttsAudioCache = new Map();
 const inFlightTTS = new Map();
 const TTS_CACHE_MAX_ITEMS = 120;
-const TTS_MAX_POOL_PER_VOICE = 3;
+
+export const ALLOWED_ROBOT_VOICES = new Set([
+  'pt-BR-ThalitaMultilingualNeural', // Feminina 1
+  'pt-BR-FranciscaNeural',           // Feminina 2
+  'pt-BR-AntonioNeural',             // Masculina 1
+  'en-US-BrianMultilingualNeural',   // Masculina 2 (Multilingual PT-BR)
+]);
+
+export function resolveRobotVoice(requestedVoice) {
+  if (requestedVoice && ALLOWED_ROBOT_VOICES.has(requestedVoice)) {
+    return requestedVoice;
+  }
+  return EDGE_VOICE_ROBOT;
+}
+
+function escapeXmlForSSML(str) {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
 export function cleanTextForTTS(text) {
   return (text || '')
@@ -162,82 +183,69 @@ export function splitTextIntoTtsSentences(text) {
   return merged;
 }
 
-async function prewarmTtsPool(voiceName = EDGE_VOICE_ROBOT, count = 2) {
-  const pool = ttsIdlePoolByVoice.get(voiceName) || [];
-  const needed = Math.max(0, count - pool.length);
-  await Promise.all(
-    Array.from({ length: needed }, async () => {
-      try {
-        const client = new MsEdgeTTS({ connectionTimeoutMs: 5000 });
-        await client.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-        releaseTtsClient(voiceName, client, false);
-      } catch {}
-    })
-  );
-}
+let sharedTtsClient = null;
+let sharedTtsReady = false;
+let ttsSerialQueue = Promise.resolve();
 
-async function acquireTtsClient(voiceName, forceFresh = false) {
-  const pool = ttsIdlePoolByVoice.get(voiceName) || [];
-  let client = null;
-  if (!forceFresh && pool.length > 0) {
-    client = pool.pop();
-  } else {
-    client = new MsEdgeTTS({ connectionTimeoutMs: 5000 });
+async function getSharedTtsClient(forceReconnect = false) {
+  if (forceReconnect && sharedTtsClient) {
+    try {
+      sharedTtsClient.close();
+    } catch {}
+    sharedTtsClient = null;
+    sharedTtsReady = false;
   }
-  await client.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+
+  if (sharedTtsClient && sharedTtsReady && sharedTtsClient._ws?.readyState === 1) {
+    return sharedTtsClient;
+  }
+
+  const client = new MsEdgeTTS({ connectionTimeoutMs: 6000 });
+  await client.setMetadata(EDGE_VOICE_ROBOT, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3, {
+    voiceLocale: 'pt-BR',
+  });
+  sharedTtsClient = client;
+  sharedTtsReady = true;
   return client;
 }
 
-function releaseTtsClient(voiceName, client, discard = false) {
-  if (!client) return;
-  if (discard) {
-    try {
-      client.close();
-    } catch {}
-    return;
-  }
-  let pool = ttsIdlePoolByVoice.get(voiceName);
-  if (!pool) {
-    pool = [];
-    ttsIdlePoolByVoice.set(voiceName, pool);
-  }
-  if (pool.length < TTS_MAX_POOL_PER_VOICE) {
-    pool.push(client);
-  } else {
-    try {
-      client.close();
-    } catch {}
-  }
+function enqueueTtsTask(taskFn) {
+  const next = ttsSerialQueue.then(taskFn, taskFn);
+  ttsSerialQueue = next.catch(() => {});
+  return next;
 }
 
 async function synthesizeBufferWithRetry(cleanText, chosenVoice, rate = '+0%', pitch = '+0Hz') {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let tts = null;
-    try {
-      tts = await acquireTtsClient(chosenVoice, attempt > 0);
-      const { audioStream } = tts.toStream(cleanText, { rate, pitch });
-      const chunks = [];
-      for await (const chunk of audioStream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  const safeVoice = resolveRobotVoice(chosenVoice);
+  const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="pt-BR"><voice name="${safeVoice}"><prosody pitch="${escapeXmlForSSML(pitch)}" rate="${escapeXmlForSSML(rate)}" volume="+0%">${escapeXmlForSSML(cleanText)}</prosody></voice></speak>`;
+
+  return enqueueTtsTask(async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const tts = await getSharedTtsClient(attempt > 0);
+        const { audioStream } = tts.rawToStream(ssml);
+        const chunks = [];
+        for await (const chunk of audioStream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        const audioBuffer = Buffer.concat(chunks);
+        if (audioBuffer.length < 64) {
+          throw new Error('Buffer TTS vazio');
+        }
+        return audioBuffer;
+      } catch (err) {
+        sharedTtsReady = false;
+        if (attempt === 2) throw err;
       }
-      const audioBuffer = Buffer.concat(chunks);
-      if (audioBuffer.length < 64) {
-        throw new Error('Buffer TTS vazio');
-      }
-      releaseTtsClient(chosenVoice, tts, false);
-      return audioBuffer;
-    } catch (err) {
-      releaseTtsClient(chosenVoice, tts, true);
-      if (attempt === 1) throw err;
     }
-  }
+  });
 }
 
 export async function getOrSynthesizeTTS(text, { voice, rate = '+0%', pitch = '+0Hz' } = {}) {
   const cleanText = cleanTextForTTS(text);
   if (!cleanText) return null;
 
-  const chosenVoice = voice || EDGE_VOICE_ROBOT;
+  const chosenVoice = resolveRobotVoice(voice);
   const cacheKey = `${chosenVoice}|${rate}|${pitch}|${cleanText}`;
 
   if (ttsAudioCache.has(cacheKey)) {
@@ -483,6 +491,7 @@ app.post('/api/chat', async (req, res) => {
     const elderName = (profile.elderName || '').trim();
     const recipientName = (profile.recipientName || '').trim();
     const recipientRelation = profile.recipientRelation || 'familiar';
+    const chosenVoice = resolveRobotVoice(profile.robotVoice);
 
     const elderRef = elderName || 'a pessoa idosa';
     const recipientRef = recipientName ? `${recipientName} (${recipientRelation})` : `a família (${recipientRelation})`;
@@ -532,7 +541,7 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
       maxTokens: 280,
       temperature: 0.6,
       stream: true,
-      onPartialText: createEarlyReplyTtsTrigger(EDGE_VOICE_ROBOT),
+      onPartialText: createEarlyReplyTtsTrigger(chosenVoice),
     });
 
     const parsed = extractJSON(rawOutput, {
@@ -559,7 +568,7 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
     }
 
     // Anexa o áudio pré-sintetizado da 1ª frase (que já rodou em paralelo durante o stream do JSON!)
-    parsed.ttsChunks = await buildPreSynthesizedTtsChunks(parsed.reply, EDGE_VOICE_ROBOT);
+    parsed.ttsChunks = await buildPreSynthesizedTtsChunks(parsed.reply, chosenVoice);
 
     // Dispara o gesto correspondente no Arduino UNO R3 físico (se conectado na USB)
     sendArduinoGesture(parsed.gesture || 'nod_gentle').catch(() => {});
@@ -731,7 +740,8 @@ Responda APENAS um JSON válido no formato:
       robotAttitude: 'warm',
     });
 
-    parsed.ttsChunks = await buildPreSynthesizedTtsChunks(parsed.robotConfirmationSpeech, EDGE_VOICE_ROBOT);
+    const chosenVoice = resolveRobotVoice(profile.robotVoice);
+    parsed.ttsChunks = await buildPreSynthesizedTtsChunks(parsed.robotConfirmationSpeech, chosenVoice);
 
     res.json(parsed);
   } catch (err) {
@@ -855,12 +865,6 @@ app.listen(PORT, () => {
   console.log(`Backend LLM Local (<= 6GB VRAM): ${KOBOLD_URL}`);
   console.log(`=============================================================\n`);
 
-  // Pré-aquece 2 conexões WebSocket da Microsoft Edge TTS e a saudação inicial em background
-  prewarmTtsPool(EDGE_VOICE_ROBOT, 2)
-    .then(() =>
-      getOrSynthesizeTTS('Olá! Eu sou o Bento. Como você está se sentindo hoje?', {
-        voice: EDGE_VOICE_ROBOT,
-      })
-    )
-    .catch(() => {});
+  // Pré-aquece a conexão WebSocket persistente da Microsoft Edge TTS em background
+  getSharedTtsClient(false).catch(() => {});
 });

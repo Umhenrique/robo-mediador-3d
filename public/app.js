@@ -52,6 +52,7 @@ const el = {
   btnNewConversation: document.getElementById('btnNewConversation'),
 
   // Modal de Configurações & Cenários
+  selectRobotVoice: document.getElementById('selectRobotVoice'),
   btnConnectArduinoWeb: document.getElementById('btnConnectArduinoWeb'),
   btnOpenSettings: document.getElementById('btnOpenSettings'),
   btnCloseSettings: document.getElementById('btnCloseSettings'),
@@ -66,6 +67,28 @@ const el = {
 
 const robot3D = new MediatorRobot3DScene(el.canvas3dContainer);
 
+function getSelectedRobotVoice() {
+  return el.selectRobotVoice?.value || 'pt-BR-ThalitaMultilingualNeural';
+}
+
+if (el.selectRobotVoice) {
+  try {
+    const savedVoice = localStorage.getItem('bento_robot_voice');
+    if (savedVoice && [...el.selectRobotVoice.options].some((o) => o.value === savedVoice)) {
+      el.selectRobotVoice.value = savedVoice;
+    }
+  } catch {}
+
+  el.selectRobotVoice.addEventListener('change', () => {
+    unlockMobileAudio();
+    try {
+      localStorage.setItem('bento_robot_voice', getSelectedRobotVoice());
+    } catch {}
+    const txt = el.liveTranscriptText?.textContent?.trim() || 'Olá! Eu sou o Bento. Como você está se sentindo hoje?';
+    speakWithRobot(txt, { emotion: 'warm', gesture: 'nod_gentle' });
+  });
+}
+
 function getProfile() {
   const rel = el.selectRecipientRelation.value;
   return {
@@ -75,6 +98,7 @@ function getProfile() {
     recipientName: el.inputRecipientName.value.trim(),
     recipientRelation: rel,
     recipientType: rel.includes('amigo') ? 'amigo' : 'familia',
+    robotVoice: getSelectedRobotVoice(),
   };
 }
 
@@ -455,7 +479,7 @@ async function fetchTtsArrayBuffer(sentenceText) {
   const res = await fetch('/api/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: sentenceText }),
+    body: JSON.stringify({ text: sentenceText, voice: getSelectedRobotVoice() }),
   });
   if (!res.ok) throw new Error('TTS backend indisponivel');
   const ab = await res.arrayBuffer();
