@@ -392,7 +392,10 @@ function unlockMobileAudio() {
   window.addEventListener(evtName, unlockMobileAudio, { once: true, passive: true });
 });
 
+let ttsPlaybackGeneration = 0;
+
 function stopCurrentRobotAudio() {
+  ttsPlaybackGeneration += 1;
   if (currentBufferSource) {
     try {
       currentBufferSource.stop(0);
@@ -413,9 +416,113 @@ function stopCurrentRobotAudio() {
   }
 }
 
-async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', statusLabel = 'Falando com você' } = {}) {
+function splitTextIntoClientSentences(text) {
+  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  const parts = clean
+    .split(/(?<=[.!?…])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) return [clean];
+
+  const merged = [];
+  let buf = '';
+  for (const p of parts) {
+    if (!buf) {
+      buf = p;
+    } else if (buf.length < 18) {
+      buf = `${buf} ${p}`;
+    } else {
+      merged.push(buf);
+      buf = p;
+    }
+  }
+  if (buf) merged.push(buf);
+  return merged;
+}
+
+function base64ToArrayBuffer(base64) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+async function fetchTtsArrayBuffer(sentenceText) {
+  const res = await fetch('/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: sentenceText }),
+  });
+  if (!res.ok) throw new Error('TTS backend indisponivel');
+  const ab = await res.arrayBuffer();
+  if (!ab || ab.byteLength < 64) throw new Error('Audio TTS vazio');
+  return ab;
+}
+
+async function playSingleAudioArrayBuffer(arrayBuffer, myGen, onFirstSoundStart) {
+  if (myGen !== ttsPlaybackGeneration) return;
+
+  const ctx = getOrCreateTtsAudioContext();
+  if (ctx) {
+    if (ctx.state === 'suspended') {
+      await ctx.resume().catch(() => {});
+    }
+    const bufferCopy = arrayBuffer.slice(0);
+    const decodedBuffer = await ctx.decodeAudioData(bufferCopy);
+    if (myGen !== ttsPlaybackGeneration) return;
+
+    await new Promise((resolve) => {
+      const source = ctx.createBufferSource();
+      source.buffer = decodedBuffer;
+      source.connect(ctx.destination);
+      currentBufferSource = source;
+      source.onended = () => {
+        if (currentBufferSource === source) currentBufferSource = null;
+        resolve();
+      };
+      if (onFirstSoundStart) onFirstSoundStart();
+      source.start(0);
+    });
+    return;
+  }
+
+  // Fallback HTML5 Audio
+  const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
+  const url = URL.createObjectURL(blob);
+  const audio = sharedAudioPlayer || new Audio();
+  audio.volume = 1.0;
+  audio.src = url;
+  audio.playsInline = true;
+  state.currentAudio = audio;
+
+  await new Promise((resolve, reject) => {
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      resolve();
+    };
+    audio.onerror = (e) => {
+      URL.revokeObjectURL(url);
+      reject(e);
+    };
+    if (onFirstSoundStart) onFirstSoundStart();
+    audio.play().catch((err) => {
+      URL.revokeObjectURL(url);
+      reject(err);
+    });
+  });
+}
+
+async function speakWithRobot(
+  text,
+  { emotion = 'warm', gesture = 'nod_gentle', statusLabel = 'Falando com você', ttsChunks = null } = {}
+) {
   if (!text) return;
   stopCurrentRobotAudio();
+  const myGen = ttsPlaybackGeneration;
 
   el.robotStateText.textContent = statusLabel;
   el.waveformBars.classList.add('active');
@@ -424,7 +531,10 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
   robot3D.setSpeakingState(true);
 
   let talkGestureTimer = null;
+  let physicalTalkStarted = false;
   const startPhysicalTalkSync = () => {
+    if (physicalTalkStarted) return;
+    physicalTalkStarted = true;
     sendGestureToArduino(gesture === 'wave_farewell' ? 'wave_farewell' : 'talk');
     if (talkGestureTimer) clearInterval(talkGestureTimer);
     talkGestureTimer = setInterval(() => {
@@ -435,71 +545,30 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
   };
 
   try {
-    const res = await fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) throw new Error('TTS backend indisponivel');
+    // Prepara a fila de frases: usa ttsChunks pré-sintetizados pelo /api/chat (latência 0ms na 1ª frase!)
+    // ou fatia o texto em frases no cliente para iniciar a 1ª frase imediatamente enquanto as seguintes baixam em paralelo
+    const chunkList =
+      Array.isArray(ttsChunks) && ttsChunks.length > 0
+        ? ttsChunks
+        : splitTextIntoClientSentences(text).map((s) => ({ text: s, audioBase64: null }));
 
-    const arrayBuffer = await res.arrayBuffer();
-    if (!arrayBuffer || arrayBuffer.byteLength < 100) {
-      throw new Error('Audio TTS vazio');
-    }
-
-    // CAMINHO 1 (PRIORITÁRIO PARA CELULAR E PC): Reproduz via Web Audio API (ttsAudioCtx)
-    // Como ttsAudioCtx foi resumido no toque do usuário, ele NUNCA sofre bloqueio de autoplay após o VAD/fetch!
-    const ctx = getOrCreateTtsAudioContext();
-    if (ctx) {
-      if (ctx.state === 'suspended') {
-        await ctx.resume().catch(() => {});
+    // Dispara o download/resolução de TODAS as frases em paralelo imediatamente
+    const audioPromises = chunkList.map((item) => {
+      if (item.audioBase64) {
+        return Promise.resolve(base64ToArrayBuffer(item.audioBase64));
       }
-      // Faz uma cópia do buffer caso precise de fallback para HTML5 Audio
-      const bufferCopy = arrayBuffer.slice(0);
-      const decodedBuffer = await ctx.decodeAudioData(bufferCopy);
-
-      await new Promise((resolve) => {
-        const source = ctx.createBufferSource();
-        source.buffer = decodedBuffer;
-        source.connect(ctx.destination);
-        currentBufferSource = source;
-        source.onended = () => {
-          if (currentBufferSource === source) currentBufferSource = null;
-          resolve();
-        };
-        startPhysicalTalkSync();
-        source.start(0);
-      });
-      return;
-    }
-
-    // CAMINHO 2 (FALLBACK HTML5 AUDIO): Caso o navegador não suporte decodeAudioData
-    const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
-    const url = URL.createObjectURL(blob);
-    const audio = sharedAudioPlayer || new Audio();
-    audio.volume = 1.0;
-    audio.src = url;
-    audio.playsInline = true;
-    state.currentAudio = audio;
-
-    await new Promise((resolve, reject) => {
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        resolve();
-      };
-      audio.onerror = (e) => {
-        URL.revokeObjectURL(url);
-        reject(e);
-      };
-      startPhysicalTalkSync();
-      audio.play().catch((err) => {
-        URL.revokeObjectURL(url);
-        reject(err);
-      });
+      return fetchTtsArrayBuffer(item.text);
     });
+
+    for (let i = 0; i < audioPromises.length; i++) {
+      if (myGen !== ttsPlaybackGeneration) break;
+      const ab = await audioPromises[i];
+      if (myGen !== ttsPlaybackGeneration) break;
+      await playSingleAudioArrayBuffer(ab, myGen, i === 0 ? startPhysicalTalkSync : null);
+    }
   } catch {
-    // CAMINHO 3 (FALLBACK NATIVO DO CELULAR/WINDOWS): Voz sintetizada local pt-BR
-    if ('speechSynthesis' in window) {
+    // Fallback nativo do navegador caso TTS falhe
+    if ('speechSynthesis' in window && myGen === ttsPlaybackGeneration) {
       await new Promise((resolve) => {
         const u = new SpeechSynthesisUtterance(text);
         u.lang = 'pt-BR';
@@ -511,8 +580,10 @@ async function speakWithRobot(text, { emotion = 'warm', gesture = 'nod_gentle', 
     }
   } finally {
     if (talkGestureTimer) clearInterval(talkGestureTimer);
-    robot3D.setSpeakingState(false);
-    setRobotStatus('Pronto para ouvir', emotion, 'idle', false);
+    if (myGen === ttsPlaybackGeneration) {
+      robot3D.setSpeakingState(false);
+      setRobotStatus('Pronto para ouvir', emotion, 'idle', false);
+    }
   }
 }
 
@@ -554,6 +625,7 @@ async function sendElderMessage(text) {
     await speakWithRobot(data.reply, {
       emotion: data.emotion || 'empathetic',
       gesture: data.gesture || 'nod_gentle',
+      ttsChunks: data.ttsChunks || null,
     });
 
     if (data.shouldEndConversation) {
@@ -685,6 +757,7 @@ async function applyCustomTone(feedbackText) {
     await speakWithRobot(data.robotConfirmationSpeech, {
       emotion: data.robotAttitude || 'warm',
       gesture: 'nod_gentle',
+      ttsChunks: data.ttsChunks || null,
     });
   } catch (err) {
     alert(`Erro ao ajustar tom: ${err.message}`);

@@ -106,32 +106,212 @@ app.post('/api/stt', async (req, res) => {
 
 /**
  * 3. TTS Neural em Português Brasileiro (0 MB VRAM, alta naturalidade)
+ *    - Mantém conexão WebSocket persistente com a Microsoft (evita ~500ms de handshake TLS por frase)
+ *    - Cache LRU em memória + deduplicação de sínteses em andamento (inFlightTTS)
  */
-app.post('/api/tts', async (req, res) => {
-  const { text, voice, rate = '+0%', pitch = '+0Hz' } = req.body;
-  if (!text || !text.trim()) {
-    return res.status(400).json({ error: 'Texto vazio para TTS' });
-  }
+const ttsIdlePoolByVoice = new Map();
+const ttsAudioCache = new Map();
+const inFlightTTS = new Map();
+const TTS_CACHE_MAX_ITEMS = 120;
+const TTS_MAX_POOL_PER_VOICE = 3;
 
-  const cleanText = text
+export function cleanTextForTTS(text) {
+  return (text || '')
     .replace(/\[TAG:[^\]]*\]/gi, '')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/[*_`~#]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
 
-  const tts = new MsEdgeTTS();
-  try {
-    const chosenVoice = voice || EDGE_VOICE_ROBOT;
-    await tts.setMetadata(chosenVoice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-    const { audioStream } = tts.toStream(cleanText, { rate, pitch });
+export function cleanReplyCrutches(replyText) {
+  if (!replyText) return '';
+  let cleaned = replyText
+    .replace(/^(Eu\s+)?(entendo|compreendo)(\s+perfeitamente|\s+muito\s+bem)?[,.\s]+/i, '')
+    .trim();
+  if (cleaned.length > 0) {
+    cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  }
+  return cleaned;
+}
 
-    const chunks = [];
-    for await (const chunk of audioStream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+export function splitTextIntoTtsSentences(text) {
+  const clean = cleanTextForTTS(text);
+  if (!clean) return [];
+  const rawParts = clean
+    .split(/(?<=[.!?…])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (rawParts.length <= 1) return [clean];
+
+  // Agrupa fragmentos muito curtos (< 18 chars, ex: "Oi!") com a frase seguinte para manter a prosódia natural
+  const merged = [];
+  let buffer = '';
+  for (const part of rawParts) {
+    if (!buffer) {
+      buffer = part;
+    } else if (buffer.length < 18) {
+      buffer = `${buffer} ${part}`;
+    } else {
+      merged.push(buffer);
+      buffer = part;
     }
-    const audioBuffer = Buffer.concat(chunks);
+  }
+  if (buffer) merged.push(buffer);
+  return merged;
+}
 
+async function prewarmTtsPool(voiceName = EDGE_VOICE_ROBOT, count = 2) {
+  const pool = ttsIdlePoolByVoice.get(voiceName) || [];
+  const needed = Math.max(0, count - pool.length);
+  await Promise.all(
+    Array.from({ length: needed }, async () => {
+      try {
+        const client = new MsEdgeTTS({ connectionTimeoutMs: 5000 });
+        await client.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+        releaseTtsClient(voiceName, client, false);
+      } catch {}
+    })
+  );
+}
+
+async function acquireTtsClient(voiceName, forceFresh = false) {
+  const pool = ttsIdlePoolByVoice.get(voiceName) || [];
+  let client = null;
+  if (!forceFresh && pool.length > 0) {
+    client = pool.pop();
+  } else {
+    client = new MsEdgeTTS({ connectionTimeoutMs: 5000 });
+  }
+  await client.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  return client;
+}
+
+function releaseTtsClient(voiceName, client, discard = false) {
+  if (!client) return;
+  if (discard) {
+    try {
+      client.close();
+    } catch {}
+    return;
+  }
+  let pool = ttsIdlePoolByVoice.get(voiceName);
+  if (!pool) {
+    pool = [];
+    ttsIdlePoolByVoice.set(voiceName, pool);
+  }
+  if (pool.length < TTS_MAX_POOL_PER_VOICE) {
+    pool.push(client);
+  } else {
+    try {
+      client.close();
+    } catch {}
+  }
+}
+
+async function synthesizeBufferWithRetry(cleanText, chosenVoice, rate = '+0%', pitch = '+0Hz') {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let tts = null;
+    try {
+      tts = await acquireTtsClient(chosenVoice, attempt > 0);
+      const { audioStream } = tts.toStream(cleanText, { rate, pitch });
+      const chunks = [];
+      for await (const chunk of audioStream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const audioBuffer = Buffer.concat(chunks);
+      if (audioBuffer.length < 64) {
+        throw new Error('Buffer TTS vazio');
+      }
+      releaseTtsClient(chosenVoice, tts, false);
+      return audioBuffer;
+    } catch (err) {
+      releaseTtsClient(chosenVoice, tts, true);
+      if (attempt === 1) throw err;
+    }
+  }
+}
+
+export async function getOrSynthesizeTTS(text, { voice, rate = '+0%', pitch = '+0Hz' } = {}) {
+  const cleanText = cleanTextForTTS(text);
+  if (!cleanText) return null;
+
+  const chosenVoice = voice || EDGE_VOICE_ROBOT;
+  const cacheKey = `${chosenVoice}|${rate}|${pitch}|${cleanText}`;
+
+  if (ttsAudioCache.has(cacheKey)) {
+    return ttsAudioCache.get(cacheKey);
+  }
+
+  if (inFlightTTS.has(cacheKey)) {
+    return inFlightTTS.get(cacheKey);
+  }
+
+  const synthPromise = synthesizeBufferWithRetry(cleanText, chosenVoice, rate, pitch)
+    .then((buf) => {
+      if (ttsAudioCache.size >= TTS_CACHE_MAX_ITEMS) {
+        const oldestKey = ttsAudioCache.keys().next().value;
+        ttsAudioCache.delete(oldestKey);
+      }
+      ttsAudioCache.set(cacheKey, buf);
+      return buf;
+    })
+    .finally(() => {
+      inFlightTTS.delete(cacheKey);
+    });
+
+  inFlightTTS.set(cacheKey, synthPromise);
+  return synthPromise;
+}
+
+async function buildPreSynthesizedTtsChunks(replyText, voice = EDGE_VOICE_ROBOT, firstChunkTimeoutMs = 650) {
+  const sentences = splitTextIntoTtsSentences(replyText);
+  if (sentences.length === 0) return [];
+
+  // Dispara todas as frases em paralelo no servidor (reaproveitando qualquer frase que já iniciou durante o stream do KoboldCpp!)
+  const promises = sentences.map((s) =>
+    getOrSynthesizeTTS(s, { voice }).catch((err) => {
+      console.warn('[Pre-TTS Warning]', err.message);
+      return null;
+    })
+  );
+
+  // Aguarda a 1ª frase ficar pronta (geralmente já terminou enquanto o Kobold gerava o resto do JSON!)
+  const firstBuf = await Promise.race([
+    promises[0],
+    new Promise((resolve) => setTimeout(() => resolve(null), firstChunkTimeoutMs)),
+  ]);
+
+  const chunks = [];
+  for (let i = 0; i < sentences.length; i++) {
+    let buf = null;
+    if (i === 0) {
+      buf = firstBuf;
+    } else {
+      // Se as frases seguintes já tiverem terminado (ou terminarem em 35ms), já envia junto!
+      buf = await Promise.race([
+        promises[i],
+        new Promise((resolve) => setTimeout(() => resolve(null), 35)),
+      ]);
+    }
+    chunks.push({
+      text: sentences[i],
+      audioBase64: buf ? buf.toString('base64') : null,
+    });
+  }
+  return chunks;
+}
+
+app.post('/api/tts', async (req, res) => {
+  const { text, voice, rate = '+0%', pitch = '+0Hz' } = req.body;
+  const cleanText = cleanTextForTTS(text);
+  if (!cleanText) {
+    return res.status(400).json({ error: 'Texto vazio para TTS' });
+  }
+
+  try {
+    const audioBuffer = await getOrSynthesizeTTS(cleanText, { voice, rate, pitch });
     res.set({
       'Content-Type': 'audio/mpeg',
       'Content-Length': audioBuffer.length,
@@ -140,18 +320,18 @@ app.post('/api/tts', async (req, res) => {
   } catch (err) {
     console.error('[TTS Error]', err.message);
     res.status(500).json({ error: err.message });
-  } finally {
-    tts.close();
   }
 });
 
 /**
  * Helper para chamar o LLM local no KoboldCpp (/v1/chat/completions)
+ * Suporta modo streaming SSE (onPartialText) para iniciar o TTS da 1ª frase
+ * ENQUANTO o KoboldCpp ainda está gerando a 2ª frase e os campos finais do JSON!
  */
-async function callLocalLLM(messages, { maxTokens = 260, temperature = 0.65, jsonMode = false } = {}) {
+async function callLocalLLM(messages, { maxTokens = 260, temperature = 0.65, stream = false, onPartialText = null } = {}) {
   const payload = {
     messages,
-    stream: false,
+    stream: Boolean(stream),
     max_tokens: maxTokens,
     temperature,
     stop: ['\nIdoso:', '\nUsuário:', '\nUser:', '<|im_end|>'],
@@ -168,8 +348,106 @@ async function callLocalLLM(messages, { maxTokens = 260, temperature = 0.65, jso
     throw new Error(`LLM KoboldCpp erro (${r.status}): ${errText}`);
   }
 
-  const data = await r.json();
-  return (data.choices?.[0]?.message?.content || '').trim();
+  const contentType = (r.headers.get('content-type') || '').toLowerCase();
+  if (!stream || !contentType.includes('text/event-stream') || !r.body) {
+    const data = await r.json();
+    const content = (data.choices?.[0]?.message?.content || data.choices?.[0]?.text || '').trim();
+    if (onPartialText && content) {
+      try {
+        onPartialText(content);
+      } catch {}
+    }
+    return content;
+  }
+
+  // Leitura completa do stream SSE até o fim (preserva 100% dos campos do JSON!)
+  const decoder = new TextDecoder('utf-8');
+  let sseBuffer = '';
+  let accumulatedText = '';
+
+  for await (const rawChunk of r.body) {
+    sseBuffer += decoder.decode(rawChunk, { stream: true });
+    const lines = sseBuffer.split('\n');
+    sseBuffer = lines.pop() || '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) continue;
+      const dataStr = line.slice(5).trim();
+      if (!dataStr || dataStr === '[DONE]') continue;
+
+      try {
+        const parsedChunk = JSON.parse(dataStr);
+        const delta =
+          parsedChunk.choices?.[0]?.delta?.content ??
+          parsedChunk.choices?.[0]?.message?.content ??
+          parsedChunk.choices?.[0]?.text ??
+          parsedChunk.token ??
+          '';
+        if (delta) {
+          accumulatedText += delta;
+          if (onPartialText) {
+            try {
+              onPartialText(accumulatedText);
+            } catch {}
+          }
+        }
+      } catch {
+        // Ignora linhas SSE parciais não-JSON
+      }
+    }
+  }
+
+  return accumulatedText.trim();
+}
+
+/**
+ * Monitora o JSON parcial durante o stream do KoboldCpp e dispara em background
+ * a síntese TTS da 1ª frase assim que o ponto final dela aparece (enquanto o LLM
+ * ainda gera o resto da resposta e os campos emotion, gesture, detectedTopic, etc.)
+ */
+function createEarlyReplyTtsTrigger(voice = EDGE_VOICE_ROBOT) {
+  let triggeredSentencesCount = 0;
+  let replyCompletedTriggered = false;
+
+  const unescapeJsonPartial = (raw) => {
+    try {
+      return JSON.parse(`"${raw}"`);
+    } catch {
+      return raw.replace(/\\"/g, '"').replace(/\\n/g, ' ').replace(/\\\\/g, '\\');
+    }
+  };
+
+  return (partialJsonText) => {
+    if (replyCompletedTriggered) return;
+
+    // Verifica se o campo "reply": "..." já fechou as aspas
+    const closedMatch = partialJsonText.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (closedMatch) {
+      replyCompletedTriggered = true;
+      const fullReply = cleanReplyCrutches(unescapeJsonPartial(closedMatch[1]));
+      const sentences = splitTextIntoTtsSentences(fullReply);
+      for (let i = triggeredSentencesCount; i < sentences.length; i++) {
+        getOrSynthesizeTTS(sentences[i], { voice }).catch(() => {});
+      }
+      triggeredSentencesCount = sentences.length;
+      return;
+    }
+
+    // Campo "reply" ainda está aberto sendo gerado token a token:
+    const openMatch = partialJsonText.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)$/);
+    if (!openMatch) return;
+
+    const currentReply = cleanReplyCrutches(unescapeJsonPartial(openMatch[1]));
+    const sentences = splitTextIntoTtsSentences(currentReply);
+    // Quando há pelo menos 2 segmentos, todos exceto o último já terminaram sua pontuação (. ? !)
+    if (sentences.length > 1) {
+      for (let i = triggeredSentencesCount; i < sentences.length - 1; i++) {
+        getOrSynthesizeTTS(sentences[i], { voice }).catch(() => {});
+        triggeredSentencesCount = i + 1;
+      }
+    }
+  };
 }
 
 /**
@@ -253,10 +531,12 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
     const rawOutput = await callLocalLLM(messages, {
       maxTokens: 280,
       temperature: 0.6,
+      stream: true,
+      onPartialText: createEarlyReplyTtsTrigger(EDGE_VOICE_ROBOT),
     });
 
     const parsed = extractJSON(rawOutput, {
-      reply: rawOutput.replace(/[{}"]/g, '').trim() || 'Eu entendo perfeitamente. Muito obrigado por confiar em mim e compartilhar isso comigo.',
+      reply: rawOutput.replace(/[{}"]/g, '').trim() || 'Muito obrigado por confiar em mim e compartilhar isso comigo.',
       emotion: heuristicFarewell ? 'warm' : 'empathetic',
       gesture: heuristicFarewell ? 'wave_farewell' : 'nod_gentle',
       detectedTopic: 'cotidiano',
@@ -267,12 +547,7 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
 
     // Limpa muletas repetitivas ("Entendo, ", "Eu entendo, ", "Compreendo, ") caso o modelo ainda tente iniciar com elas
     if (parsed.reply) {
-      parsed.reply = parsed.reply
-        .replace(/^(Eu\s+)?(entendo|compreendo)(\s+perfeitamente|\s+muito\s+bem)?[,.\s]+/i, '')
-        .trim();
-      if (parsed.reply.length > 0) {
-        parsed.reply = parsed.reply.charAt(0).toUpperCase() + parsed.reply.slice(1);
-      }
+      parsed.reply = cleanReplyCrutches(parsed.reply);
     }
 
     if (heuristicFarewell) {
@@ -282,6 +557,9 @@ Responda APENAS um objeto JSON válido (sem texto fora do JSON) no formato:
       }
       parsed.gesture = 'wave_farewell';
     }
+
+    // Anexa o áudio pré-sintetizado da 1ª frase (que já rodou em paralelo durante o stream do JSON!)
+    parsed.ttsChunks = await buildPreSynthesizedTtsChunks(parsed.reply, EDGE_VOICE_ROBOT);
 
     // Dispara o gesto correspondente no Arduino UNO R3 físico (se conectado na USB)
     sendArduinoGesture(parsed.gesture || 'nod_gentle').catch(() => {});
@@ -453,6 +731,8 @@ Responda APENAS um JSON válido no formato:
       robotAttitude: 'warm',
     });
 
+    parsed.ttsChunks = await buildPreSynthesizedTtsChunks(parsed.robotConfirmationSpeech, EDGE_VOICE_ROBOT);
+
     res.json(parsed);
   } catch (err) {
     console.error('[Refine Error]', err.message);
@@ -574,4 +854,13 @@ app.listen(PORT, () => {
   console.log(`Interface 3D e Mediacao: http://localhost:${PORT}`);
   console.log(`Backend LLM Local (<= 6GB VRAM): ${KOBOLD_URL}`);
   console.log(`=============================================================\n`);
+
+  // Pré-aquece 2 conexões WebSocket da Microsoft Edge TTS e a saudação inicial em background
+  prewarmTtsPool(EDGE_VOICE_ROBOT, 2)
+    .then(() =>
+      getOrSynthesizeTTS('Olá! Eu sou o Bento. Como você está se sentindo hoje?', {
+        voice: EDGE_VOICE_ROBOT,
+      })
+    )
+    .catch(() => {});
 });
